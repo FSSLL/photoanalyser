@@ -10,7 +10,12 @@ import React, {
   useState,
 } from "react";
 import { Alert, Linking, Platform } from "react-native";
-import { analyzePhoto } from "@/services/aiService";
+import {
+  analyzePhotoOffline,
+  checkForModelUpdate,
+  getModelConfig,
+  getCurrentModelVersion,
+} from "@/services/offlineAIService";
 
 export type PhotoAsset = {
   id: string;
@@ -78,6 +83,8 @@ type PhotoLibraryContextType = {
   setReviewBeforeDelete: (v: boolean) => void;
   aiProgress: AIAnalysisProgress;
   analyzeAllWithAI: () => Promise<void>;
+  modelVersion: string;
+  checkForModelUpdate: () => Promise<{ updated: boolean; version: string }>;
   cancelAIAnalysis: () => void;
 };
 
@@ -90,105 +97,91 @@ const STORAGE_KEY_SETTINGS = "photo_finder_settings";
 const STORAGE_KEY_AI_TAGS = "photo_finder_ai_tags";
 const AI_BATCH_SIZE = 3; // concurrent photos to analyze at once
 
-// Phase 1: Filename-pattern tag assignment.
-// Only uses real metadata (filename, mediaType) — no random/hash-based guessing.
-// Swap assignMockTags() for a real Vision/Core ML embedder in Phase 2.
-
-// Map common filename patterns to descriptive tags
-const FILENAME_RULES: Array<{ pattern: RegExp; tags: string[] }> = [
-  { pattern: /screenshot|screen.shot|screen_shot/i, tags: ["screenshot", "screen", "text"] },
-  { pattern: /screen.rec|recording/i, tags: ["screen recording", "video", "screen"] },
-  { pattern: /whatsapp|telegram|signal|imessage/i, tags: ["message", "chat", "conversation"] },
-  { pattern: /scan|scanned|scanning/i, tags: ["scan", "document", "text"] },
-  { pattern: /receipt|invoice|bill/i, tags: ["receipt", "document", "text"] },
-  { pattern: /document|doc\b/i, tags: ["document", "text"] },
-  { pattern: /\bid[\s_-]|id_card|idcard|identity|passport|license|licence/i, tags: ["id", "document", "text", "id card"] },
-  { pattern: /selfie/i, tags: ["selfie", "portrait"] },
-  { pattern: /front.cam|front_cam/i, tags: ["selfie", "portrait"] },
-  { pattern: /burst/i, tags: ["burst", "action"] },
-  { pattern: /panorama|pano/i, tags: ["panorama", "landscape"] },
-  { pattern: /raw\b|\.raw|\.dng/i, tags: ["raw", "photo"] },
-  { pattern: /video|vid_|mov_|movie/i, tags: ["video"] },
-  { pattern: /live.photo|livp/i, tags: ["live photo", "photo"] },
-  { pattern: /portrait.mode|depth/i, tags: ["portrait", "depth"] },
-  { pattern: /slow.mo|slowmo|slo-mo/i, tags: ["slow motion", "video"] },
-  { pattern: /timelapse|time.lapse/i, tags: ["timelapse", "video"] },
-];
-
-// Search query aliases: expand common user search terms to better-matched tags
-const SEARCH_ALIASES: Record<string, string[]> = {
-  "id": ["id", "id card", "document", "identity", "passport", "license"],
-  "ids": ["id", "id card", "document", "identity"],
-  "id card": ["id", "id card", "document", "identity"],
-  "passport": ["id", "id card", "document", "passport"],
-  "license": ["id", "document", "license"],
-  "doc": ["document", "text", "scan"],
-  "docs": ["document", "text", "scan"],
-  "document": ["document", "text", "scan", "receipt"],
-  "receipt": ["receipt", "document", "text"],
-  "text": ["text", "document", "screenshot", "scan"],
-  "screenshot": ["screenshot", "screen"],
-  "screenshots": ["screenshot", "screen"],
-  "screen": ["screenshot", "screen"],
-  "vid": ["video"],
-  "vids": ["video"],
-  "videos": ["video"],
-  "movie": ["video"],
-  "selfie": ["selfie", "portrait"],
-  "selfies": ["selfie", "portrait"],
-  "portrait": ["selfie", "portrait"],
-  "chat": ["message", "chat", "conversation"],
-  "message": ["message", "chat", "conversation"],
-  "whatsapp": ["message", "chat", "whatsapp"],
-  "scan": ["scan", "document", "text"],
-  "slow motion": ["slow motion", "video"],
-  "slow mo": ["slow motion", "video"],
-  "live photo": ["live photo", "photo"],
-  "panorama": ["panorama", "landscape"],
-  "pano": ["panorama", "landscape"],
-};
-
-function assignMockTags(asset: MediaLibrary.Asset): string[] {
+/**
+ * Quick synchronous tag assignment using basic filename + mediaType patterns.
+ * Used for photos loaded into the grid before full offline AI analysis runs.
+ * The offline AI service provides richer tags (including EXIF) after analysis.
+ */
+function quickTagsFromFilename(asset: MediaLibrary.Asset): string[] {
   const tags: string[] = [];
   const filename = (asset.filename || "").toLowerCase();
   const ext = filename.split(".").pop() || "";
 
-  // Video mediaType is reliable
-  if (asset.mediaType === "video") {
-    tags.push("video");
-  }
+  if (asset.mediaType === "video") tags.push("video");
 
-  // Apply filename pattern rules
+  // Quick filename checks for common patterns
+  const checks: [RegExp, string[]][] = [
+    [/screenshot|screen.shot|screen_shot/i, ["screenshot", "screen", "text"]],
+    [/screen.rec|recording/i, ["screen recording", "video", "screen"]],
+    [/whatsapp|telegram|signal/i, ["message", "chat", "conversation"]],
+    [/scan|scanned/i, ["scan", "document", "text"]],
+    [/receipt|invoice|bill/i, ["receipt", "document", "text"]],
+    [/\bid[\s_\-]|id_card|idcard|identity|passport|license|licence/i, ["id", "document", "text", "id card"]],
+    [/selfie/i, ["selfie", "portrait"]],
+    [/burst/i, ["burst", "action"]],
+    [/panorama|pano/i, ["panorama", "landscape"]],
+    [/video|vid_|mov_/i, ["video"]],
+    [/slow.mo|slowmo/i, ["slow motion", "video"]],
+    [/timelapse/i, ["timelapse", "video"]],
+    [/document|doc\b/i, ["document", "text"]],
+  ];
+
   let matched = false;
-  for (const rule of FILENAME_RULES) {
-    if (rule.pattern.test(filename)) {
-      tags.push(...rule.tags);
+  for (const [pattern, patTags] of checks) {
+    if (pattern.test(filename)) {
+      tags.push(...patTags);
       matched = true;
     }
   }
 
-  // Generic photo tag if no specific pattern matched
   if (!matched && asset.mediaType !== "video") {
     tags.push("photo");
   }
 
-  // Extension-based hints
-  if (["jpg", "jpeg", "heic", "png"].includes(ext) && !tags.includes("photo")) {
+  if (["jpg", "jpeg", "heic", "png"].includes(ext) && !tags.includes("photo") && !tags.includes("screenshot")) {
     tags.push("photo");
   }
 
   return [...new Set(tags)];
 }
 
-function expandQuery(words: string[]): string[] {
+// In-memory search aliases cache — populated from offline AI config on load
+let _searchAliasesCache: Record<string, string[]> = {
+  "id": ["id", "id card", "document", "identity", "passport", "license"],
+  "ids": ["id", "id card", "document", "identity"],
+  "id card": ["id", "id card", "document", "identity"],
+  "passport": ["id", "id card", "document", "passport"],
+  "license": ["id", "document", "license"],
+  "doc": ["document", "text", "scan"],
+  "document": ["document", "text", "scan", "receipt"],
+  "receipt": ["receipt", "document", "text"],
+  "screenshot": ["screenshot", "screen"],
+  "screenshots": ["screenshot", "screen"],
+  "screen": ["screenshot", "screen"],
+  "vid": ["video"],
+  "vids": ["video"],
+  "videos": ["video"],
+  "selfie": ["selfie", "portrait"],
+  "selfies": ["selfie", "portrait"],
+  "portrait": ["selfie", "portrait"],
+  "chat": ["message", "chat", "conversation"],
+  "message": ["message", "chat", "conversation"],
+  "scan": ["scan", "document", "text"],
+  "panorama": ["panorama", "landscape"],
+  "pano": ["panorama", "landscape"],
+  "night": ["night", "dark", "long exposure"],
+  "outdoor": ["outdoor", "location", "nature"],
+  "outdoors": ["outdoor", "location", "nature"],
+  "indoor": ["indoor", "flash"],
+};
+
+function syncExpandQuery(words: string[]): string[] {
   const expanded = new Set<string>(words);
-  // Also check multi-word combos (e.g., "id card")
   const fullQuery = words.join(" ");
-  if (SEARCH_ALIASES[fullQuery]) {
-    SEARCH_ALIASES[fullQuery].forEach((t) => expanded.add(t));
-  }
+  const fullAliases = _searchAliasesCache[fullQuery];
+  if (fullAliases) fullAliases.forEach((t) => expanded.add(t));
   for (const word of words) {
-    const aliases = SEARCH_ALIASES[word];
+    const aliases = _searchAliasesCache[word];
     if (aliases) aliases.forEach((t) => expanded.add(t));
   }
   return [...expanded];
@@ -197,34 +190,20 @@ function expandQuery(words: string[]): string[] {
 function searchPhotos(photos: PhotoAsset[], query: string): PhotoAsset[] {
   if (!query.trim()) return [];
   const rawWords = query.toLowerCase().trim().split(/\s+/);
-  const searchTerms = expandQuery(rawWords);
+  const searchTerms = syncExpandQuery(rawWords);
 
   const scored = photos
     .map((photo) => {
       const tags = photo.tags || [];
       const filename = (photo.filename || "").toLowerCase();
-      // Split filename into words for accurate matching
       const fileWords = filename.split(/[\s_\-./]+/).filter(Boolean);
       let score = 0;
 
       for (const term of searchTerms) {
-        // Exact tag match — highest confidence
-        if (tags.includes(term)) {
-          score += 15;
-          continue;
-        }
-        // Tag starts with search term (minimum 3 chars to avoid noise)
-        if (term.length >= 3 && tags.some((t) => t.startsWith(term))) {
-          score += 8;
-        }
-        // Exact word in filename
-        if (fileWords.includes(term)) {
-          score += 12;
-        }
-        // Filename contains term as substring (only if term is 3+ chars)
-        if (term.length >= 3 && filename.includes(term)) {
-          score += 5;
-        }
+        if (tags.includes(term)) { score += 15; continue; }
+        if (term.length >= 3 && tags.some((t) => t.startsWith(term))) score += 8;
+        if (fileWords.includes(term)) score += 12;
+        if (term.length >= 3 && filename.includes(term)) score += 5;
       }
 
       return { photo, score };
@@ -256,6 +235,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
   const [sortOrder, setSortOrder] = useState<"match" | "newest" | "oldest">("match");
   const [cloudEnabled, setCloudEnabledState] = useState(false);
   const [reviewBeforeDelete, setReviewBeforeDeleteState] = useState(true);
+  const [modelVersion, setModelVersion] = useState<string>(getCurrentModelVersion());
 
   const [aiProgress, setAIProgress] = useState<AIAnalysisProgress>({
     total: 0,
@@ -326,6 +306,43 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     })();
   }, []);
 
+  // Load offline AI model config on mount (updates search aliases cache)
+  useEffect(() => {
+    (async () => {
+      const config = await getModelConfig();
+      if (config.search_aliases) {
+        _searchAliasesCache = { ..._searchAliasesCache, ...config.search_aliases };
+      }
+      setModelVersion(config.version);
+
+      // Try to fetch a newer config in background — only downloads JSON, no photos
+      try {
+        const result = await checkForModelUpdate();
+        if (result.updated) {
+          const updated = await getModelConfig();
+          if (updated.search_aliases) {
+            _searchAliasesCache = { ..._searchAliasesCache, ...updated.search_aliases };
+          }
+          setModelVersion(result.version);
+        }
+      } catch {
+        // Network unavailable — use cached config
+      }
+    })();
+  }, []);
+
+  const handleCheckForModelUpdate = useCallback(async (): Promise<{ updated: boolean; version: string }> => {
+    const result = await checkForModelUpdate();
+    if (result.updated) {
+      const config = await getModelConfig();
+      if (config.search_aliases) {
+        _searchAliasesCache = { ..._searchAliasesCache, ...config.search_aliases };
+      }
+      setModelVersion(result.version);
+    }
+    return result;
+  }, []);
+
   const requestPermission = useCallback(async () => {
     if (Platform.OS === "web") {
       Alert.alert("Not supported", "Photo library access is only available on a real iOS or Android device.");
@@ -373,10 +390,10 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     }
   }, [permission]);
 
-  // Build merged tags: AI tags (precise) + filename tags (always available)
+  // Build merged tags: AI tags (precise) + quick filename tags (always available)
   const buildTags = useCallback((a: MediaLibrary.Asset): string[] => {
     const aiTags = aiTagsRef.current.get(a.id);
-    const filenameTags = assignMockTags(a);
+    const filenameTags = quickTagsFromFilename(a);
     if (aiTags && aiTags.length > 0) {
       return [...new Set([...aiTags, ...filenameTags])];
     }
@@ -547,7 +564,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         return;
       }
 
-      // Process in batches of AI_BATCH_SIZE
+      // Process photos one at a time (offline analysis reads EXIF per photo)
       for (let i = 0; i < toAnalyze.length; i += AI_BATCH_SIZE) {
         if (abort.signal.aborted) break;
 
@@ -556,10 +573,8 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
           batch.map(async (asset) => {
             if (abort.signal.aborted) return;
             try {
-              // Get asset info with localUri for actual image data
-              const info = await MediaLibrary.getAssetInfoAsync(asset.id);
-              const uri = info.localUri ?? info.uri;
-              const result = await analyzePhoto(uri, abort.signal);
+              // All analysis is on-device — no photos are sent anywhere
+              const result = await analyzePhotoOffline(asset, abort.signal);
               if (result.tags.length > 0) {
                 const normalized = result.tags.map((t) => t.toLowerCase().trim());
                 aiTagsRef.current.set(asset.id, normalized);
@@ -567,7 +582,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
               }
             } catch (err) {
               if ((err as Error)?.name !== "AbortError") {
-                console.warn(`AI analysis failed for ${asset.filename}:`, err);
+                console.warn(`Offline AI analysis failed for ${asset.filename}:`, err);
               }
             }
           })
@@ -591,7 +606,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
             if (!aiTags) return p;
             return {
               ...p,
-              tags: [...new Set([...aiTags, ...assignMockTags({ id: p.id, uri: p.uri, filename: p.filename, mediaType: p.mediaType } as MediaLibrary.Asset)])],
+              tags: [...new Set([...aiTags, ...quickTagsFromFilename({ id: p.id, uri: p.uri, filename: p.filename, mediaType: p.mediaType } as MediaLibrary.Asset)])],
               isIndexed: true,
             };
           })
@@ -746,6 +761,8 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     aiProgress,
     analyzeAllWithAI,
     cancelAIAnalysis,
+    modelVersion,
+    checkForModelUpdate: handleCheckForModelUpdate,
   };
 
   return (

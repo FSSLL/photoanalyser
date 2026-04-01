@@ -56,8 +56,9 @@ Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` 
 
 - Entry: `src/index.ts` — reads `PORT`, starts Express
 - App setup: `src/app.ts` — mounts CORS, JSON/urlencoded parsing (15MB limit for base64 images), routes at `/api`
-- Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health`; `src/routes/ai/analyze-photo.ts` exposes `POST /api/ai/analyze-photo`
-- AI: Uses `@workspace/integrations-openai-ai-server` with `gpt-5-mini` vision model to analyze photo thumbnails and return precise tags
+- Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health`; `src/routes/ai/analyze-photo.ts` exposes `POST /api/ai/analyze-photo` (cloud, optional); `src/routes/ai/model-config.ts` exposes `GET /api/ai/model-config` (versioned offline classifier config)
+- Offline AI: The primary AI path — `GET /api/ai/model-config` returns a versioned JSON rules config; the Expo app downloads and caches this; all photo analysis then runs 100% on-device using EXIF + dimensions + filename patterns. Photos are NEVER sent to any server.
+- Cloud AI (optional/unused): `POST /api/ai/analyze-photo` uses `@workspace/integrations-openai-ai-server` with GPT-4o Vision — disabled in default flow
 - Depends on: `@workspace/db`, `@workspace/api-zod`, `@workspace/integrations-openai-ai-server`
 - `pnpm --filter @workspace/api-server run dev` — run the dev server
 - `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.cjs`)

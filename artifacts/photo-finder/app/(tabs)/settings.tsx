@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TouchableOpacity,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -60,15 +61,31 @@ export default function SettingsScreen() {
     requestPermission,
     indexStatus,
     indexPhotos,
-    cloudEnabled,
-    setCloudEnabled,
     reviewBeforeDelete,
     setReviewBeforeDelete,
     photos,
     aiProgress,
     analyzeAllWithAI,
     cancelAIAnalysis,
+    modelVersion,
+    checkForModelUpdate,
   } = usePhotoLibrary();
+
+  const [checkingUpdate, setCheckingUpdate] = React.useState(false);
+  const [lastUpdateMsg, setLastUpdateMsg] = React.useState<string | null>(null);
+
+  const handleCheckUpdate = async () => {
+    setCheckingUpdate(true);
+    setLastUpdateMsg(null);
+    try {
+      const result = await checkForModelUpdate();
+      setLastUpdateMsg(result.updated ? `Updated to v${result.version}` : "Already on the latest model");
+    } catch {
+      setLastUpdateMsg("Could not reach update server");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
   const bottomPad = insets.bottom + (Platform.OS === "web" ? 34 : 0);
@@ -185,7 +202,7 @@ export default function SettingsScreen() {
       </View>
 
       {/* AI Analysis */}
-      <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>AI PHOTO ANALYSIS</Text>
+      <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>OFFLINE AI ANALYSIS</Text>
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
         {/* Hero status row */}
         <View style={[styles.aiHero, { borderBottomColor: colors.border }]}>
@@ -193,13 +210,13 @@ export default function SettingsScreen() {
             <Feather name="cpu" size={22} color={colors.primary} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.aiHeroTitle, { color: colors.foreground }]}>Vision AI</Text>
+            <Text style={[styles.aiHeroTitle, { color: colors.foreground }]}>On-Device AI</Text>
             <Text style={[styles.aiHeroSub, { color: colors.mutedForeground }]}>
               {aiProgress.isAnalyzing
                 ? `Analyzing ${aiProgress.analyzed} / ${aiProgress.total} photos…`
                 : aiProgress.analyzed > 0
-                ? `${aiProgress.analyzed} photos analyzed with AI`
-                : "Not yet analyzed — tap Analyze to start"}
+                ? `${aiProgress.analyzed} photos analyzed (on-device)`
+                : "Tap below to analyze your library on-device"}
             </Text>
           </View>
           {aiProgress.isAnalyzing && (
@@ -235,23 +252,48 @@ export default function SettingsScreen() {
           </View>
         )}
 
-        {/* Action button */}
+        {/* Model version + update */}
+        <SettingsRow
+          icon="package"
+          title="Classifier Model"
+          subtitle={`v${modelVersion} · all processing on-device`}
+          right={
+            checkingUpdate ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <TouchableOpacity
+                onPress={handleCheckUpdate}
+                style={[styles.updateBtn, { borderColor: colors.primary + "55", backgroundColor: colors.primary + "15" }]}
+              >
+                <Text style={[styles.updateBtnText, { color: colors.primary }]}>Check for update</Text>
+              </TouchableOpacity>
+            )
+          }
+        />
+
+        {lastUpdateMsg && (
+          <View style={[styles.warningBox, { backgroundColor: colors.success + "15", borderColor: colors.success + "44" }]}>
+            <Feather name="check-circle" size={14} color={colors.success} />
+            <Text style={[styles.warningText, { color: colors.success }]}>{lastUpdateMsg}</Text>
+          </View>
+        )}
+
         {aiProgress.isAnalyzing ? (
           <SettingsRow
             icon="x-circle"
             title="Cancel Analysis"
-            subtitle="Stop the current AI indexing run"
+            subtitle="Stop the current on-device indexing run"
             danger
             onPress={cancelAIAnalysis}
           />
         ) : (
           <SettingsRow
             icon="zap"
-            title={aiProgress.analyzed > 0 ? "Analyze New Photos" : "Analyze with AI"}
+            title={aiProgress.analyzed > 0 ? "Analyze New Photos" : "Analyze Library (On-Device)"}
             subtitle={
               aiProgress.analyzed > 0
-                ? "Run AI on photos not yet analyzed"
-                : "Use AI vision to precisely detect photo contents"
+                ? "Run the on-device AI on photos not yet analyzed"
+                : "Analyze EXIF, dimensions & filenames — photos stay on device"
             }
             onPress={permission === "denied" ? undefined : analyzeAllWithAI}
           />
@@ -260,7 +302,7 @@ export default function SettingsScreen() {
         {aiProgress.lastAnalyzed && (
           <SettingsRow
             icon="clock"
-            title="Last AI Analysis"
+            title="Last Analysis"
             subtitle={new Date(aiProgress.lastAnalyzed).toLocaleString()}
           />
         )}
@@ -289,46 +331,39 @@ export default function SettingsScreen() {
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <SettingsRow
           icon="shield"
-          title="On-Device Processing"
-          subtitle="All search happens locally on your device"
+          title="Photos Stay On Device"
+          subtitle="Your photos are never sent to any server — analysis is 100% on-device"
           right={
             <View style={[styles.badge, { backgroundColor: colors.success + "22" }]}>
-              <Text style={[styles.badgeText, { color: colors.success }]}>ON</Text>
+              <Text style={[styles.badgeText, { color: colors.success }]}>Guaranteed</Text>
             </View>
           }
         />
         <SettingsRow
-          icon="cloud"
-          title="Cloud Processing"
-          subtitle="Enable for future AI-powered search (Phase 2)"
+          icon="download"
+          title="Model Updates"
+          subtitle="Only a small rules file is downloaded — no photos are uploaded"
           right={
-            <Switch
-              value={cloudEnabled}
-              onValueChange={setCloudEnabled}
-              trackColor={{ false: colors.muted, true: colors.primary + "88" }}
-              thumbColor={cloudEnabled ? colors.primary : colors.mutedForeground}
-            />
+            <View style={[styles.badge, { backgroundColor: colors.primary + "22" }]}>
+              <Text style={[styles.badgeText, { color: colors.primary }]}>Safe</Text>
+            </View>
           }
         />
-        {cloudEnabled && (
-          <View style={[styles.warningBox, { backgroundColor: colors.warning + "18", borderColor: colors.warning + "44" }]}>
-            <Feather name="alert-triangle" size={14} color={colors.warning} />
-            <Text style={[styles.warningText, { color: colors.warning }]}>
-              Cloud processing is a placeholder. No data is uploaded in this version.
-            </Text>
-          </View>
-        )}
       </View>
 
       {/* About */}
       <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>ABOUT</Text>
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <SettingsRow icon="info" title="Version" subtitle="1.1.0 — AI Vision Search" />
-        <SettingsRow icon="cpu" title="Search Engine" subtitle={`Filename tags${aiProgress.analyzed > 0 ? " + AI vision tags" : " (run AI analysis for precision)"}`} />
+        <SettingsRow icon="info" title="Version" subtitle="1.2.0 — Offline AI Search" />
+        <SettingsRow
+          icon="cpu"
+          title="Search Engine"
+          subtitle={`On-device classifier${aiProgress.analyzed > 0 ? " + EXIF analysis active" : " (tap Analyze Library to index)"}`}
+        />
         <SettingsRow
           icon="lock"
           title="Privacy"
-          subtitle="AI analysis sends compressed thumbnails to a private server for processing. Results are stored only on your device."
+          subtitle="Photos never leave your device. The AI model self-updates by downloading only a small rules config."
         />
       </View>
     </ScrollView>
@@ -446,5 +481,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: "Inter_400Regular",
     lineHeight: 18,
+  },
+  updateBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  updateBtnText: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
   },
 });
