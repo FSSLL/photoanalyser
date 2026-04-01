@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "Photo Finder AI",
+    "slug": "photo-finder",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "photo-finder",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D1B2A"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.photofinder.ai",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Photo Finder AI needs access to your photo library to search, browse, and help you manage your photos. All processing happens on your device — your photos are never uploaded.",
+        "NSPhotoLibraryAddUsageDescription": "Photo Finder AI needs permission to save photos to your library."
+      }
+    },
+    "android": {
+      "permissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Photo Finder AI needs access to your photo library to search, browse, and help you manage your photos. All processing is on-device.",
+          "savePhotosPermission": "Allow Photo Finder AI to save photos.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

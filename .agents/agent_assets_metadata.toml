@@ -1,0 +1,8 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "C_sodSSFJ6vrD4x1B62vG"
+uri = "file://artifacts/photo-finder/assets/images/icon.png"
+type = "image"
+title = "photo finder ai app icon"

@@ -1,0 +1,27 @@
+kind = "mobile"
+previewPath = "/photo-finder/"
+title = "Photo Finder AI"
+version = "1.0.0"
+id = "artifacts/photo-finder"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/photo-finder/" ]
+localPort = 20690
+
+[services.development]
+run = "pnpm --filter @workspace/photo-finder run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/photo-finder", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/photo-finder", "run", "serve" ]
+
+[services.env]
+PORT = "20690"
+BASE_PATH = "/photo-finder/"
