@@ -14,6 +14,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { usePhotoLibrary } from "@/context/PhotoLibraryContext";
+import { isMlKitAvailable } from "@/services/offlineAIService";
 import { useColors } from "@/hooks/useColors";
 
 function SettingsRow({
@@ -73,6 +74,7 @@ export default function SettingsScreen() {
 
   const [checkingUpdate, setCheckingUpdate] = React.useState(false);
   const [lastUpdateMsg, setLastUpdateMsg] = React.useState<string | null>(null);
+  const mlkitAvailable = React.useMemo(() => isMlKitAvailable(), []);
 
   const handleCheckUpdate = async () => {
     setCheckingUpdate(true);
@@ -278,6 +280,71 @@ export default function SettingsScreen() {
           </View>
         )}
 
+        {/* Visual AI (ML Kit) status */}
+        <SettingsRow
+          icon={mlkitAvailable ? "eye" : "eye-off"}
+          title="Visual AI (ML Kit)"
+          subtitle={
+            mlkitAvailable
+              ? "On — recognises food, animals, nature, people & more"
+              : "Requires app build — not available in Expo Go"
+          }
+          right={
+            <View
+              style={[
+                styles.badge,
+                { backgroundColor: mlkitAvailable ? colors.success + "22" : colors.muted },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.badgeText,
+                  { color: mlkitAvailable ? colors.success : colors.mutedForeground },
+                ]}
+              >
+                {mlkitAvailable ? "Active" : "Off"}
+              </Text>
+            </View>
+          }
+        />
+
+        {/* OCR status */}
+        <SettingsRow
+          icon={mlkitAvailable ? "type" : "type"}
+          title="Text Recognition (OCR)"
+          subtitle={
+            mlkitAvailable
+              ? "On — reads text in receipts, documents, whiteboards"
+              : "Requires app build — reads text inside any photo"
+          }
+          right={
+            <View
+              style={[
+                styles.badge,
+                { backgroundColor: mlkitAvailable ? colors.success + "22" : colors.muted },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.badgeText,
+                  { color: mlkitAvailable ? colors.success : colors.mutedForeground },
+                ]}
+              >
+                {mlkitAvailable ? "Active" : "Off"}
+              </Text>
+            </View>
+          }
+        />
+
+        {!mlkitAvailable && (
+          <View style={[styles.warningBox, { backgroundColor: colors.primary + "12", borderColor: colors.primary + "33" }]}>
+            <Feather name="info" size={14} color={colors.primary} />
+            <Text style={[styles.warningText, { color: colors.primary }]}>
+              Build the app with EAS or install from the App Store to enable full visual AI analysis.
+            </Text>
+          </View>
+        )}
+
         {aiProgress.isAnalyzing ? (
           <SettingsRow
             icon="x-circle"
@@ -292,8 +359,12 @@ export default function SettingsScreen() {
             title={aiProgress.analyzed > 0 ? "Analyze New Photos" : "Analyze Library (On-Device)"}
             subtitle={
               aiProgress.analyzed > 0
-                ? "Run the on-device AI on photos not yet analyzed"
-                : "Analyze EXIF, dimensions & filenames — photos stay on device"
+                ? mlkitAvailable
+                  ? "Re-analyze using visual AI + EXIF + filenames"
+                  : "Run the on-device AI on photos not yet analyzed"
+                : mlkitAvailable
+                ? "Visual AI labels every photo: food, animals, nature & more"
+                : "EXIF, dimensions & filenames — photos stay on device"
             }
             onPress={permission === "denied" ? undefined : analyzeAllWithAI}
           />

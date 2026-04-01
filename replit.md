@@ -96,3 +96,33 @@ Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHea
 ### `scripts` (`@workspace/scripts`)
 
 Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.
+
+### `artifacts/photo-finder` (`@workspace/photo-finder`)
+
+Expo (React Native) mobile app targeting iOS App Store. Users browse their photo library, search with natural language, select/delete photos, and configure privacy.
+
+**AI Analysis Pipeline (fully offline, photos never leave device):**
+
+1. **Metadata analysis** (works in Expo Go):
+   - Filename pattern matching (`offlineAIService.ts`)
+   - Dimension-based screenshot detection using exact iPhone screen resolutions
+   - EXIF data: GPS → outdoor/location, flash → indoor, ISO → night, focal length → wide/tele
+   - Tags computed by `quickTagsFromFilename` immediately on photo load; richer tags from `analyzePhotoOffline` during "Analyze Library" run
+
+2. **Visual AI via ML Kit** (requires dev/production build, graceful fallback in Expo Go):
+   - `@react-native-ml-kit/image-labeling` → recognises photo content: food, animals, nature, people, buildings, etc. (≥55% confidence threshold)
+   - `@react-native-ml-kit/text-recognition` (OCR) → reads text in receipts, documents, whiteboards, menus; triggered only when text content likely
+   - Images resized to 640px wide via `expo-image-manipulator` before ML Kit analysis for speed
+   - All wrapped in try/catch — silently falls back to metadata analysis when not linked
+
+3. **Model config** (`GET /api/ai/model-config`): versioned JSON rules served from API server, cached locally in AsyncStorage, auto-updates on launch. Covers filename rules, EXIF rules, dimension rules, screen resolutions, search aliases, and search suggestions.
+
+**Key files:**
+- `services/offlineAIService.ts` — all analysis logic, ML Kit integration, model config management
+- `context/PhotoLibraryContext.tsx` — photo state, `quickTagsFromFilename`, batch analysis, search
+- `app/(tabs)/library.tsx` — photo grid with select mode; `selectBar` positioned above tab bar using `tabBarHeight`
+- `app/(tabs)/review.tsx` — review selected photos before delete; `bottomBar` uses same `tabBarHeight` fix
+- `app/(tabs)/search.tsx` — natural language search with alias expansion
+- `app/(tabs)/settings.tsx` — AI analysis controls, ML Kit status indicator, model update
+
+**UI/Design:** Dark navy `#0D1B2A`, blue primary `#3B82F6`, Inter font. Tab bar is `position: absolute` — all floating bars must use `bottom: tabBarHeight` (49 + insets.bottom on iOS, 84 on web).

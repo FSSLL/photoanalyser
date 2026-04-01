@@ -2,18 +2,22 @@
  * Offline AI Photo Classifier
  *
  * All analysis runs 100% on-device using:
- *   - EXIF metadata (GPS, flash, ISO, focal length, etc.)
- *   - Image dimensions & aspect ratio
- *   - Filename pattern matching
+ *   1. EXIF metadata (GPS, flash, ISO, focal length, etc.)
+ *   2. Image dimensions & aspect ratio
+ *   3. Filename pattern matching
+ *   4. ML Kit Image Labeling — recognises actual photo content (food, animals,
+ *      nature, people, buildings, etc.) — requires dev/production build
+ *   5. ML Kit Text Recognition (OCR) — reads text inside photos for receipts,
+ *      documents, whiteboards, menus, etc. — requires dev/production build
  *
- * The classifier "model" is a rules config downloaded from the server (just JSON,
- * never photos). The app caches it locally so it works fully offline, and can
- * self-update by downloading a newer config version when available.
+ * In Expo Go, steps 4 & 5 gracefully fall back to metadata-only analysis.
+ * When the app is built as a dev or App Store build the full ML pipeline runs.
  *
  * Photos NEVER leave the device.
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as MediaLibrary from "expo-media-library";
 import { Platform } from "react-native";
 
@@ -60,6 +64,7 @@ export interface OfflineAnalysisResult {
   tags: string[];
   confidence: number;
   source: "offline-ai";
+  mlkit?: boolean;
 }
 
 // ─── Built-in fallback config (used when offline & no cached config) ─────────
@@ -101,8 +106,13 @@ const FALLBACK_CONFIG: ModelConfig = {
   screen_resolutions: [
     [430, 932], [393, 852], [390, 844], [375, 812], [414, 896],
     [414, 736], [375, 667], [428, 926], [320, 568],
+    // Physical pixels
+    [1320, 2868], [1290, 2796], [1284, 2778], [1179, 2556],
+    [1170, 2532], [1206, 2622], [1125, 2436], [1080, 2340],
+    [750, 1334], [640, 1136],
   ],
   search_aliases: {
+    // Documents & text
     "id": ["id", "id card", "document", "identity", "passport", "license"],
     "ids": ["id", "id card", "document", "identity"],
     "id card": ["id", "id card", "document", "identity"],
@@ -111,34 +121,113 @@ const FALLBACK_CONFIG: ModelConfig = {
     "doc": ["document", "text", "scan"],
     "docs": ["document", "text", "scan"],
     "document": ["document", "text", "scan", "receipt"],
+    "documents": ["document", "text", "scan", "receipt"],
     "receipt": ["receipt", "document", "text"],
+    "receipts": ["receipt", "document", "text"],
     "text": ["text", "document", "screenshot", "scan"],
     "screenshot": ["screenshot", "screen"],
     "screenshots": ["screenshot", "screen"],
     "screen": ["screenshot", "screen"],
+    // Videos
     "vid": ["video"],
     "vids": ["video"],
     "videos": ["video"],
+    // People
     "selfie": ["selfie", "portrait", "person"],
     "selfies": ["selfie", "portrait", "person"],
     "portrait": ["selfie", "portrait", "person"],
+    "people": ["person", "people"],
+    "person": ["person", "people"],
+    "friend": ["person", "people"],
+    "friends": ["person", "people"],
+    "face": ["person", "portrait", "face"],
+    "faces": ["person", "portrait", "face"],
+    // Animals
+    "animal": ["animal", "dog", "cat", "bird", "pet"],
+    "animals": ["animal", "dog", "cat", "bird", "pet"],
+    "pet": ["pet", "dog", "cat", "animal"],
+    "pets": ["pet", "dog", "cat", "animal"],
+    "dog": ["dog", "animal", "pet"],
+    "dogs": ["dog", "animal", "pet"],
+    "cat": ["cat", "animal", "pet"],
+    "cats": ["cat", "animal", "pet"],
+    "bird": ["bird", "animal"],
+    "birds": ["bird", "animal"],
+    // Food & drink
+    "food": ["food", "meal", "fruit", "vegetable", "restaurant"],
+    "foods": ["food", "meal", "fruit", "vegetable"],
+    "meal": ["food", "meal"],
+    "meals": ["food", "meal"],
+    "restaurant": ["food", "meal", "restaurant"],
+    "coffee": ["coffee", "drink", "food"],
+    "drink": ["drink", "coffee", "food"],
+    "drinks": ["drink", "coffee", "food"],
+    "breakfast": ["food", "meal"],
+    "lunch": ["food", "meal"],
+    "dinner": ["food", "meal"],
+    "fruit": ["fruit", "food"],
+    "pizza": ["pizza", "food"],
+    "dessert": ["dessert", "cake", "food"],
+    "cake": ["cake", "dessert", "food"],
+    // Nature
+    "nature": ["nature", "outdoor", "tree", "plant", "flower", "landscape"],
+    "outdoor": ["outdoor", "nature", "location"],
+    "outdoors": ["outdoor", "nature", "location"],
+    "indoor": ["indoor", "flash"],
+    "tree": ["tree", "nature", "outdoor", "forest"],
+    "trees": ["tree", "nature", "outdoor", "forest"],
+    "flower": ["flower", "nature", "outdoor"],
+    "flowers": ["flower", "nature", "outdoor"],
+    "plant": ["plant", "nature", "outdoor"],
+    "plants": ["plant", "nature", "outdoor"],
+    "sky": ["sky", "outdoor", "cloud"],
+    "clouds": ["cloud", "sky", "outdoor"],
+    "beach": ["beach", "outdoor", "water", "ocean"],
+    "ocean": ["ocean", "water", "outdoor", "beach"],
+    "sea": ["ocean", "water", "outdoor", "beach"],
+    "water": ["water", "outdoor", "ocean", "river"],
+    "mountain": ["mountain", "outdoor", "nature", "landscape"],
+    "mountains": ["mountain", "outdoor", "nature", "landscape"],
+    "forest": ["forest", "tree", "outdoor", "nature"],
+    "snow": ["snow", "outdoor", "winter", "cold"],
+    "winter": ["snow", "winter", "outdoor"],
+    "sunset": ["sunset", "outdoor", "sky"],
+    "sunrise": ["sunrise", "outdoor", "sky"],
+    "landscape": ["landscape", "outdoor", "nature"],
+    "grass": ["grass", "outdoor", "nature"],
+    // Built environment
+    "city": ["city", "urban", "building", "outdoor"],
+    "building": ["building", "architecture", "city"],
+    "buildings": ["building", "architecture", "city"],
+    "architecture": ["architecture", "building"],
+    "street": ["street", "city", "urban", "outdoor"],
+    // Vehicles
+    "car": ["car", "vehicle"],
+    "cars": ["car", "vehicle"],
+    "vehicle": ["car", "vehicle"],
+    // Messaging & social
     "chat": ["message", "chat", "conversation"],
     "message": ["message", "chat", "conversation"],
+    "conversation": ["message", "chat", "conversation"],
+    // Other photo types
     "scan": ["scan", "document", "text"],
     "panorama": ["panorama", "landscape"],
     "pano": ["panorama", "landscape"],
     "slow motion": ["slow motion", "video"],
     "slow mo": ["slow motion", "video"],
     "night": ["night", "dark", "long exposure"],
-    "outdoor": ["outdoor", "location", "nature"],
-    "outdoors": ["outdoor", "location", "nature"],
-    "indoor": ["indoor", "flash"],
     "qr": ["qr code", "barcode", "scan"],
     "barcode": ["qr code", "barcode", "scan"],
+    "meme": ["meme", "text", "fun"],
+    "art": ["art", "drawing", "handwritten"],
+    "drawing": ["art", "drawing", "handwritten"],
+    "map": ["map", "location"],
   },
   suggestions: [
-    "screenshots", "selfies", "videos", "documents", "ID",
-    "receipts", "scans", "panoramas", "night", "outdoor", "slow motion",
+    "screenshots", "selfies", "videos", "documents", "receipts",
+    "food", "nature", "animals", "people", "sunset",
+    "beach", "mountains", "city", "night", "ID",
+    "scans", "panoramas", "slow motion",
   ],
 };
 
@@ -195,7 +284,207 @@ export async function checkForModelUpdate(signal?: AbortSignal): Promise<{ updat
   }
 }
 
-// ─── Offline Photo Analyzer ───────────────────────────────────────────────────
+// ─── Optional ML Kit modules (dev/production builds only) ────────────────────
+
+interface ImageLabel {
+  text: string;
+  confidence: number;
+}
+
+interface TextRecognitionResult {
+  text: string;
+  blocks?: Array<{ text: string }>;
+}
+
+interface MlKitLabeling {
+  label(imagePath: string, options?: { confidenceThreshold?: number }): Promise<ImageLabel[]>;
+}
+
+interface MlKitTextRecognition {
+  recognize(imagePath: string): Promise<TextRecognitionResult>;
+}
+
+let _mlkitLabeling: MlKitLabeling | null = null;
+let _mlkitText: MlKitTextRecognition | null = null;
+let _mlkitChecked = false;
+
+function initMlKit() {
+  if (_mlkitChecked) return;
+  _mlkitChecked = true;
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("@react-native-ml-kit/image-labeling");
+    _mlkitLabeling = mod.default ?? mod;
+  } catch {
+    // Not available in this build (Expo Go)
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("@react-native-ml-kit/text-recognition");
+    _mlkitText = mod.default ?? mod;
+  } catch {
+    // Not available in this build (Expo Go)
+  }
+}
+
+/** Returns true when ML Kit is linked (dev/production build), false in Expo Go. */
+export function isMlKitAvailable(): boolean {
+  initMlKit();
+  return _mlkitLabeling !== null || _mlkitText !== null;
+}
+
+// ─── ML Kit label → app tag mapping ──────────────────────────────────────────
+
+const LABEL_TAG_MAP: Record<string, string[]> = {
+  // People
+  person: ["person", "people"],
+  human: ["person", "people"],
+  face: ["person", "portrait", "face"],
+  smile: ["person", "portrait"],
+  man: ["person", "people"],
+  woman: ["person", "people"],
+  child: ["person", "people", "child"],
+  baby: ["person", "baby", "child"],
+  crowd: ["person", "people", "crowd"],
+  // Animals
+  animal: ["animal"],
+  mammal: ["animal"],
+  dog: ["dog", "animal", "pet"],
+  cat: ["cat", "animal", "pet"],
+  bird: ["bird", "animal"],
+  horse: ["horse", "animal"],
+  fish: ["fish", "animal"],
+  rabbit: ["rabbit", "animal", "pet"],
+  wildlife: ["animal", "wildlife", "outdoor"],
+  // Food & drink
+  food: ["food"],
+  fruit: ["fruit", "food"],
+  vegetable: ["vegetable", "food"],
+  pizza: ["pizza", "food"],
+  cake: ["cake", "dessert", "food"],
+  bread: ["bread", "food"],
+  coffee: ["coffee", "drink"],
+  drink: ["drink"],
+  beverage: ["drink"],
+  meal: ["food", "meal"],
+  restaurant: ["restaurant", "food"],
+  plate: ["food", "meal"],
+  // Nature
+  tree: ["tree", "nature", "outdoor"],
+  plant: ["plant", "nature", "outdoor"],
+  flower: ["flower", "nature", "outdoor"],
+  grass: ["grass", "outdoor", "nature"],
+  sky: ["sky", "outdoor"],
+  cloud: ["cloud", "sky", "outdoor"],
+  water: ["water", "outdoor"],
+  ocean: ["ocean", "water", "outdoor", "beach"],
+  sea: ["ocean", "water", "outdoor", "beach"],
+  river: ["river", "water", "outdoor"],
+  lake: ["lake", "water", "outdoor"],
+  beach: ["beach", "outdoor", "water"],
+  sand: ["beach", "outdoor", "sand"],
+  mountain: ["mountain", "outdoor", "nature", "landscape"],
+  forest: ["forest", "outdoor", "nature", "tree"],
+  snow: ["snow", "outdoor", "winter"],
+  ice: ["ice", "outdoor", "winter"],
+  sunset: ["sunset", "outdoor", "sky"],
+  sunrise: ["sunrise", "outdoor", "sky"],
+  nature: ["nature", "outdoor"],
+  landscape: ["landscape", "outdoor"],
+  // Built environment
+  building: ["building", "architecture"],
+  architecture: ["architecture", "building"],
+  house: ["house", "building"],
+  room: ["room", "indoor"],
+  kitchen: ["kitchen", "indoor", "food"],
+  street: ["street", "city", "outdoor"],
+  city: ["city", "urban", "outdoor"],
+  road: ["road", "outdoor", "vehicle"],
+  bridge: ["bridge", "architecture", "outdoor"],
+  // Vehicles
+  car: ["car", "vehicle"],
+  vehicle: ["vehicle"],
+  truck: ["truck", "vehicle"],
+  bicycle: ["bicycle", "vehicle"],
+  motorcycle: ["motorcycle", "vehicle"],
+  airplane: ["airplane", "vehicle", "travel"],
+  boat: ["boat", "vehicle", "water"],
+  // Text & documents
+  text: ["text", "document"],
+  document: ["document", "text"],
+  book: ["book", "text"],
+  sign: ["sign", "text", "outdoor"],
+  label: ["text"],
+  // Art & media
+  art: ["art", "drawing"],
+  painting: ["art", "painting"],
+  illustration: ["art", "drawing", "illustration"],
+  // Other
+  sport: ["sport", "activity"],
+  fitness: ["fitness", "sport", "activity"],
+  music: ["music"],
+  party: ["party", "people", "celebration"],
+  travel: ["travel", "outdoor"],
+  map: ["map", "location"],
+  phone: ["phone", "technology"],
+  computer: ["computer", "technology"],
+  indoor: ["indoor"],
+  outdoor: ["outdoor"],
+  night: ["night", "dark"],
+  dark: ["night", "dark"],
+};
+
+// ─── OCR text analysis ────────────────────────────────────────────────────────
+
+function analyzeOcrText(text: string): string[] {
+  const tags: string[] = [];
+  const lower = text.toLowerCase();
+
+  if (text.trim().length > 10) {
+    tags.push("text");
+  }
+
+  // Receipt / invoice patterns
+  if (/total|subtotal|receipt|invoice|payment|paid|amount|tax|vat|cash|card/i.test(lower)) {
+    tags.push("receipt", "document");
+  }
+
+  // Menu
+  if (/menu|appetizer|entrée|entree|dessert|beverage|\$/i.test(lower)) {
+    tags.push("menu", "food", "document");
+  }
+
+  // Phone number
+  if (/\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b/.test(text)) {
+    tags.push("contact");
+  }
+
+  // URL / link
+  if (/https?:\/\/|www\./i.test(lower)) {
+    tags.push("link");
+  }
+
+  // Email
+  if (/\S+@\S+\.\S+/.test(text)) {
+    tags.push("email", "contact");
+  }
+
+  // Address
+  if (/\b(street|st\.|avenue|ave\.|road|rd\.|boulevard|blvd\.)\b/i.test(lower)) {
+    tags.push("address");
+  }
+
+  // Whiteboard / handwritten
+  if (text.length > 50 && !/[0-9]/.test(text.slice(0, 20))) {
+    tags.push("handwritten");
+  }
+
+  return tags;
+}
+
+// ─── EXIF analysis ────────────────────────────────────────────────────────────
 
 interface ExifData {
   GPSLatitude?: number;
@@ -239,7 +528,6 @@ function applyExifRules(exif: ExifData, rules: ExifRule[]): Array<{ tags: string
         }
         break;
       case "flash_fired":
-        // Flash EXIF bit 0 = flash fired
         if (rule.value === true && exif.Flash != null && (exif.Flash & 1) === 1) {
           matches.push({ tags: rule.tags, weight: rule.weight });
         }
@@ -294,15 +582,14 @@ function applyDimensionRules(
   const matches: Array<{ tags: string[]; weight: number }> = [];
   const ratio = width > 0 && height > 0 ? width / height : 1;
 
-  // Check if exact screen resolution (high confidence screenshot)
   const isScreenshot = screenResolutions.some(
     ([sw, sh]) =>
       (width === sw && height === sh) ||
-      (width === sh && height === sw) // rotated
+      (width === sh && height === sw)
   );
   if (isScreenshot) {
     matches.push({ tags: ["screenshot", "screen", "text"], weight: 12 });
-    return matches; // No need to check further
+    return matches;
   }
 
   for (const rule of rules) {
@@ -323,24 +610,18 @@ function extractExifSignals(exif: ExifData): string[] {
   const software = (exif.Software ?? "").toLowerCase();
   const userComment = (exif.UserComment ?? "").toLowerCase();
 
-  // Scanner / document apps
   if (software.includes("scan") || software.includes("document") || software.includes("adobe scan")) {
     tags.push("scan", "document", "text");
   }
-  // Note-taking / drawing apps
   if (software.includes("notes") || software.includes("notability") || software.includes("procreate")) {
     tags.push("drawing", "art", "handwritten");
   }
-  // Photo editors
   if (software.includes("lightroom") || software.includes("vsco") || software.includes("snapseed")) {
     tags.push("edited", "photo");
   }
-  // Social media saves
   if (software.includes("instagram") || software.includes("tiktok") || software.includes("snapchat")) {
     tags.push("social media", "photo");
   }
-
-  // User comment might contain meaningful data
   if (userComment && userComment.length > 3 && !userComment.includes("ascii")) {
     tags.push("text");
   }
@@ -348,9 +629,88 @@ function extractExifSignals(exif: ExifData): string[] {
   return tags;
 }
 
+// ─── ML Kit visual analysis ───────────────────────────────────────────────────
+
+async function runMlKitAnalysis(
+  assetUri: string,
+  existingTagKeys: Set<string>,
+  signal?: AbortSignal
+): Promise<Array<{ tags: string[]; weight: number; source: string }>> {
+  if (Platform.OS === "web" || signal?.aborted) return [];
+
+  initMlKit();
+  if (!_mlkitLabeling && !_mlkitText) return [];
+
+  const results: Array<{ tags: string[]; weight: number; source: string }> = [];
+
+  try {
+    // Resize to 640px wide — faster ML processing, still good accuracy
+    const resized = await ImageManipulator.manipulateAsync(
+      assetUri,
+      [{ resize: { width: 640 } }],
+      { format: ImageManipulator.SaveFormat.JPEG, compress: 0.82 }
+    );
+
+    if (signal?.aborted) return results;
+
+    // ── Image labeling ─────────────────────────────────────────────────────
+    if (_mlkitLabeling) {
+      try {
+        const labels = await _mlkitLabeling.label(resized.uri, { confidenceThreshold: 0.55 });
+
+        for (const label of labels) {
+          const key = label.text.toLowerCase();
+          const mapped = LABEL_TAG_MAP[key];
+          const weight = Math.max(1, Math.round(label.confidence * 9));
+
+          if (mapped) {
+            results.push({ tags: mapped, weight, source: "mlkit-label" });
+          } else {
+            // Add the raw label as a tag so users can still search it
+            results.push({ tags: [key], weight: Math.max(1, weight - 2), source: "mlkit-label" });
+          }
+        }
+      } catch {
+        // ML Kit not linked in this build — silently ignore
+      }
+    }
+
+    if (signal?.aborted) return results;
+
+    // ── OCR / Text recognition ────────────────────────────────────────────
+    // Run OCR if: (a) existing tags suggest text content, OR
+    //             (b) image labeling found a text-related label
+    const textRelatedTags = ["screenshot", "document", "receipt", "scan", "text", "id", "id card", "sign", "book", "whiteboard"];
+    const shouldRunOcr =
+      textRelatedTags.some((t) => existingTagKeys.has(t)) ||
+      results.some((r) => r.tags.some((t) => textRelatedTags.includes(t)));
+
+    if (_mlkitText && shouldRunOcr) {
+      try {
+        const ocrResult = await _mlkitText.recognize(resized.uri);
+        if (ocrResult.text && ocrResult.text.trim().length > 5) {
+          const ocrTags = analyzeOcrText(ocrResult.text);
+          if (ocrTags.length > 0) {
+            results.push({ tags: ocrTags, weight: 7, source: "mlkit-ocr" });
+          }
+        }
+      } catch {
+        // OCR not linked in this build — silently ignore
+      }
+    }
+  } catch {
+    // Image resize failed or ML Kit threw — fall through to metadata results
+  }
+
+  return results;
+}
+
+// ─── Main public API ──────────────────────────────────────────────────────────
+
 /**
- * Analyze a single photo on-device using EXIF + filename + dimensions.
- * This is the main entry point — no photos are sent anywhere.
+ * Analyse a single photo fully on-device.
+ * Combines EXIF + filename + dimensions + ML Kit visual analysis (when available).
+ * No photos are ever sent anywhere.
  */
 export async function analyzePhotoOffline(
   asset: MediaLibrary.Asset,
@@ -373,11 +733,11 @@ export async function analyzePhotoOffline(
     addTags(["photo"], 1);
   }
 
-  // 2. Filename rules (fast, no network/disk I/O)
+  // 2. Filename rules
   const filenameMatches = applyFilenameRules(asset.filename || "", config.filename_rules);
   for (const m of filenameMatches) addTags(m.tags, m.weight);
 
-  // 3. Dimension rules (fast)
+  // 3. Dimension rules
   const dimMatches = applyDimensionRules(
     asset.width,
     asset.height,
@@ -386,7 +746,7 @@ export async function analyzePhotoOffline(
   );
   for (const m of dimMatches) addTags(m.tags, m.weight);
 
-  // 4. EXIF data (requires disk read, but stays on device)
+  // 4. EXIF data (on-device disk read)
   if (!signal?.aborted && Platform.OS !== "web") {
     try {
       const info = await MediaLibrary.getAssetInfoAsync(asset.id, { shouldDownloadFromNetwork: false });
@@ -402,12 +762,24 @@ export async function analyzePhotoOffline(
     }
   }
 
-  // 5. Build final tag list sorted by score
+  // 5. ML Kit visual analysis (image labeling + OCR)
+  //    Only runs in dev/production builds. Gracefully skipped in Expo Go.
+  let usedMlKit = false;
+  if (!signal?.aborted && asset.mediaType !== "video") {
+    const existingTagKeys = new Set(tagScores.keys());
+    const mlResults = await runMlKitAnalysis(asset.uri, existingTagKeys, signal);
+
+    if (mlResults.length > 0) {
+      usedMlKit = true;
+      for (const m of mlResults) addTags(m.tags, m.weight);
+    }
+  }
+
+  // 6. Build final tag list sorted by score
   const sortedTags = [...tagScores.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([tag]) => tag);
 
-  // Confidence: rough estimate based on max score achieved
   const maxScore = Math.max(...tagScores.values(), 0);
   const confidence = Math.min(maxScore / 10, 1);
 
@@ -415,6 +787,7 @@ export async function analyzePhotoOffline(
     tags: sortedTags,
     confidence,
     source: "offline-ai",
+    mlkit: usedMlKit,
   };
 }
 
