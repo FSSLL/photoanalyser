@@ -13,6 +13,7 @@ import { Alert, Linking, Platform } from "react-native";
 import {
   analyzePhotoOffline,
   checkForModelUpdate,
+  generatePhotoDescription,
   getModelConfig,
   getCurrentModelVersion,
 } from "@/services/offlineAIService";
@@ -30,6 +31,7 @@ export type PhotoAsset = {
   localUri?: string;
   albumId?: string;
   tags?: string[];
+  description?: string;
   isIndexed?: boolean;
 };
 
@@ -222,15 +224,37 @@ let _searchAliasesCache: Record<string, string[]> = {
   "indoor": ["indoor", "flash"],
 };
 
+/**
+ * Basic English depluralization so "dogs" matches the "dog" tag,
+ * "beaches" matches "beach", "cities" matches "city", etc.
+ */
+function depluralize(word: string): string {
+  if (word.length <= 3) return word;
+  if (word.endsWith("ies") && word.length > 4) return word.slice(0, -3) + "y";
+  if (/ches$|shes$|xes$|zes$|sses$/.test(word)) return word.slice(0, -2);
+  if (word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+  return word;
+}
+
 function syncExpandQuery(words: string[]): string[] {
   const expanded = new Set<string>(words);
+
+  // Add singular/stem forms of each word
+  for (const word of words) {
+    const stem = depluralize(word);
+    if (stem !== word) expanded.add(stem);
+  }
+
+  // Alias expansion (covers both original and stem forms)
+  const allWords = [...expanded];
   const fullQuery = words.join(" ");
   const fullAliases = _searchAliasesCache[fullQuery];
   if (fullAliases) fullAliases.forEach((t) => expanded.add(t));
-  for (const word of words) {
+  for (const word of allWords) {
     const aliases = _searchAliasesCache[word];
     if (aliases) aliases.forEach((t) => expanded.add(t));
   }
+
   return [...expanded];
 }
 
@@ -243,14 +267,25 @@ function searchPhotos(photos: PhotoAsset[], query: string): PhotoAsset[] {
     .map((photo) => {
       const tags = photo.tags || [];
       const filename = (photo.filename || "").toLowerCase();
+      const description = (photo.description || "").toLowerCase();
       const fileWords = filename.split(/[\s_\-./]+/).filter(Boolean);
+      const descWords = description.split(/\s+/).filter(Boolean);
       let score = 0;
 
       for (const term of searchTerms) {
+        // ── Tag matches (highest confidence — AI/metadata assigned) ───────────
         if (tags.includes(term)) { score += 15; continue; }
-        if (term.length >= 3 && tags.some((t) => t.startsWith(term))) score += 8;
+        if (term.length >= 3 && tags.some((t) => t.startsWith(term))) { score += 8; continue; }
+        if (term.length >= 4 && tags.some((t) => t.includes(term))) score += 4;
+
+        // ── Description matches (visual AI words — good confidence) ───────────
+        if (descWords.includes(term)) { score += 10; continue; }
+        if (term.length >= 4 && descWords.some((w) => w.startsWith(term))) score += 6;
+        if (term.length >= 4 && description.includes(term)) score += 3;
+
+        // ── Filename matches ──────────────────────────────────────────────────
         if (fileWords.includes(term)) score += 12;
-        if (term.length >= 3 && filename.includes(term)) score += 5;
+        else if (term.length >= 3 && filename.includes(term)) score += 5;
       }
 
       return { photo, score };
@@ -457,19 +492,23 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         first: PAGE_SIZE,
       });
 
-      const assets: PhotoAsset[] = result.assets.map((a) => ({
-        id: a.id,
-        uri: a.uri,
-        filename: a.filename,
-        mediaType: a.mediaType,
-        width: a.width,
-        height: a.height,
-        creationTime: a.creationTime,
-        modificationTime: a.modificationTime,
-        duration: a.duration,
-        tags: buildTags(a),
-        isIndexed: aiTagsRef.current.has(a.id),
-      }));
+      const assets: PhotoAsset[] = result.assets.map((a) => {
+        const tags = buildTags(a);
+        return {
+          id: a.id,
+          uri: a.uri,
+          filename: a.filename,
+          mediaType: a.mediaType,
+          width: a.width,
+          height: a.height,
+          creationTime: a.creationTime,
+          modificationTime: a.modificationTime,
+          duration: a.duration,
+          tags,
+          description: generatePhotoDescription(tags, a.mediaType),
+          isIndexed: aiTagsRef.current.has(a.id),
+        };
+      });
 
       setPhotos(assets);
       setRecentPhotos(assets.slice(0, RECENT_SIZE));
@@ -504,19 +543,23 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         after: cursor,
       });
 
-      const newAssets: PhotoAsset[] = result.assets.map((a) => ({
-        id: a.id,
-        uri: a.uri,
-        filename: a.filename,
-        mediaType: a.mediaType,
-        width: a.width,
-        height: a.height,
-        creationTime: a.creationTime,
-        modificationTime: a.modificationTime,
-        duration: a.duration,
-        tags: buildTags(a),
-        isIndexed: aiTagsRef.current.has(a.id),
-      }));
+      const newAssets: PhotoAsset[] = result.assets.map((a) => {
+        const tags = buildTags(a);
+        return {
+          id: a.id,
+          uri: a.uri,
+          filename: a.filename,
+          mediaType: a.mediaType,
+          width: a.width,
+          height: a.height,
+          creationTime: a.creationTime,
+          modificationTime: a.modificationTime,
+          duration: a.duration,
+          tags,
+          description: generatePhotoDescription(tags, a.mediaType),
+          isIndexed: aiTagsRef.current.has(a.id),
+        };
+      });
 
       setPhotos((prev) => [...prev, ...newAssets]);
       setCursor(result.endCursor);
@@ -646,14 +689,16 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       }
 
       if (!abort.signal.aborted) {
-        // Update in-memory photos with AI tags
+        // Update in-memory photos with AI tags + regenerate description
         setPhotos((prev) =>
           prev.map((p) => {
             const aiTags = aiTagsRef.current.get(p.id);
             if (!aiTags) return p;
+            const mergedTags = [...new Set([...aiTags, ...quickTagsFromFilename({ id: p.id, uri: p.uri, filename: p.filename, mediaType: p.mediaType } as MediaLibrary.Asset)])];
             return {
               ...p,
-              tags: [...new Set([...aiTags, ...quickTagsFromFilename({ id: p.id, uri: p.uri, filename: p.filename, mediaType: p.mediaType } as MediaLibrary.Asset)])],
+              tags: mergedTags,
+              description: generatePhotoDescription(mergedTags, p.mediaType),
               isIndexed: true,
             };
           })

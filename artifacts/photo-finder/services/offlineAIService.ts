@@ -791,6 +791,128 @@ export async function analyzePhotoOffline(
   };
 }
 
+// ─── Photo description generator ─────────────────────────────────────────────
+
+/**
+ * Generates a keyword-rich description of a photo from its tags.
+ * Used internally by the search engine so searches like "dog beach" or
+ * "food restaurant" find photos even when the exact word isn't a tag.
+ * The description is also human-readable so it can be surfaced in the UI later.
+ */
+export function generatePhotoDescription(tags: string[], mediaType: string): string {
+  const t = new Set(tags);
+  const parts: string[] = [];
+
+  // Videos
+  if (mediaType === "video" || t.has("video")) {
+    if (t.has("slow motion")) return "slow motion video clip recording";
+    if (t.has("timelapse")) return "timelapse time-lapse video recording";
+    if (t.has("screen recording")) return "screen recording video capture";
+    return "video clip recording";
+  }
+
+  // Screenshots / screen captures
+  if (t.has("screenshot") || t.has("screen")) {
+    const extras: string[] = ["screenshot screen capture"];
+    if (t.has("receipt")) extras.push("receipt payment invoice");
+    if (t.has("document") || t.has("text")) extras.push("document text");
+    if (t.has("chat") || t.has("message")) extras.push("chat conversation message");
+    if (t.has("id") || t.has("id card")) extras.push("identity document ID");
+    return extras.join(" ");
+  }
+
+  // Documents / scans (not outdoor photos)
+  if ((t.has("document") || t.has("scan")) && !t.has("outdoor")) {
+    if (t.has("receipt")) return "receipt invoice payment document scan text money";
+    if (t.has("id") || t.has("id card")) return "ID card identity document passport license official";
+    if (t.has("handwritten")) return "handwritten document note text scan paper";
+    return "document scan text paper note";
+  }
+
+  parts.push("photo");
+
+  // ── Subjects ────────────────────────────────────────────────────────────────
+  if (t.has("selfie")) parts.push("selfie portrait person face");
+  else if (t.has("person") || t.has("people") || t.has("face") || t.has("crowd")) parts.push("people person portrait");
+  if (t.has("baby") || t.has("child")) parts.push("baby child kid");
+  if (t.has("dog")) parts.push("dog puppy pet animal");
+  if (t.has("cat")) parts.push("cat kitten pet animal");
+  if (t.has("bird")) parts.push("bird animal wildlife feather");
+  if (t.has("horse")) parts.push("horse animal equine");
+  if (t.has("fish")) parts.push("fish marine animal water");
+  if (t.has("rabbit")) parts.push("rabbit bunny pet animal");
+  if (t.has("animal") && !t.has("dog") && !t.has("cat") && !t.has("bird") && !t.has("horse") && !t.has("fish")) {
+    parts.push("animal wildlife creature");
+  }
+
+  // Food
+  if (t.has("food") || t.has("meal")) parts.push("food meal eating dish plate");
+  if (t.has("restaurant")) parts.push("restaurant dining cafeteria eating");
+  if (t.has("coffee")) parts.push("coffee cafe drink beverage morning");
+  if (t.has("drink") || t.has("beverage")) parts.push("drink beverage liquid");
+  if (t.has("fruit")) parts.push("fruit fresh healthy food");
+  if (t.has("pizza")) parts.push("pizza slice food Italian meal");
+  if (t.has("cake") || t.has("dessert")) parts.push("cake dessert sweet sugar treat");
+
+  // Nature
+  if (t.has("flower")) parts.push("flower bloom blossom plant colorful");
+  if (t.has("tree")) parts.push("tree trees plant nature green");
+  if (t.has("plant")) parts.push("plant green leaf garden nature");
+  if (t.has("grass")) parts.push("grass lawn meadow green nature");
+
+  // Structures & objects
+  if (t.has("building") || t.has("architecture")) parts.push("building architecture structure urban");
+  if (t.has("house")) parts.push("house home building");
+  if (t.has("bridge")) parts.push("bridge architecture urban");
+  if (t.has("car") || t.has("vehicle")) parts.push("car vehicle automobile road transport");
+  if (t.has("bicycle")) parts.push("bicycle bike cycling transport");
+  if (t.has("airplane")) parts.push("airplane flight aviation travel sky");
+  if (t.has("boat")) parts.push("boat ship sailing water");
+
+  // Art & media
+  if (t.has("art") || t.has("drawing") || t.has("painting")) parts.push("art drawing painting artwork creative");
+  if (t.has("map")) parts.push("map navigation location directions");
+  if (t.has("sign")) parts.push("sign text notice board");
+  if (t.has("book")) parts.push("book reading text library");
+  if (t.has("music")) parts.push("music concert event performance");
+
+  // ── Location / setting ──────────────────────────────────────────────────────
+  if (t.has("beach")) parts.push("beach sand seaside coast ocean holiday");
+  else if (t.has("ocean") || t.has("sea")) parts.push("ocean sea waves water coast marine");
+  else if (t.has("water") || t.has("river") || t.has("lake")) parts.push("water river lake stream");
+  if (t.has("mountain")) parts.push("mountain peak summit hiking alpine landscape");
+  if (t.has("forest")) parts.push("forest woods jungle trees nature hiking");
+  if (t.has("snow")) parts.push("snow winter cold ice frost freeze");
+  if (t.has("sky")) parts.push("sky air clouds blue above");
+  if (t.has("cloud")) parts.push("clouds cloudy sky overcast weather");
+  if (t.has("city") || t.has("street")) parts.push("city urban street town downtown");
+  if (t.has("outdoor") || t.has("location")) parts.push("outdoor outside nature fresh air");
+  else if (t.has("indoor")) parts.push("indoor inside interior room");
+
+  // ── Conditions ──────────────────────────────────────────────────────────────
+  if (t.has("sunset")) parts.push("sunset dusk golden hour evening orange sky");
+  else if (t.has("sunrise")) parts.push("sunrise dawn morning golden early");
+  if (t.has("night") || t.has("dark")) parts.push("night dark evening low light stars");
+  if (t.has("panorama")) parts.push("panorama panoramic wide landscape view");
+  if (t.has("long exposure")) parts.push("long exposure night light trails blur");
+  if (t.has("edited")) parts.push("edited filtered processed");
+  if (t.has("social media")) parts.push("social media post online sharing");
+  if (t.has("travel")) parts.push("travel trip vacation adventure holiday");
+  if (t.has("sport") || t.has("fitness") || t.has("activity")) parts.push("sport fitness exercise workout activity gym");
+  if (t.has("party") || t.has("celebration")) parts.push("party celebration event birthday gathering fun");
+
+  if (parts.length === 1) {
+    // Generic photo with only basic metadata
+    if (t.has("outdoor") || t.has("location")) return "outdoor photo nature landscape scenery";
+    if (t.has("night") || t.has("dark")) return "night photo dark low light";
+    if (t.has("indoor")) return "indoor photo room interior";
+    return "photo image picture";
+  }
+
+  // De-duplicate and join
+  return [...new Set(parts.join(" ").split(" "))].join(" ");
+}
+
 /**
  * Expand search query words using the model's alias map.
  * Runs fully offline using cached config.
