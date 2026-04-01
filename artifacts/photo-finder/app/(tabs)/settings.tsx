@@ -118,7 +118,15 @@ export default function SettingsScreen() {
           <SettingsRow
             icon="unlock"
             title="Expand Access"
-            subtitle="Grant full photo library access"
+            subtitle="Select more photos or grant full access"
+            onPress={requestPermission}
+          />
+        )}
+        {permission === "denied" && (
+          <SettingsRow
+            icon="settings"
+            title="Open Settings"
+            subtitle="Enable photo access in your device Settings"
             onPress={requestPermission}
           />
         )}

@@ -9,7 +9,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Alert, Platform } from "react-native";
+import { Alert, Linking, Platform } from "react-native";
 
 export type PhotoAsset = {
   id: string;
@@ -162,6 +162,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
 
   const indexedPhotosRef = useRef<Map<string, string[]>>(new Map());
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadPhotosRef = useRef<() => Promise<void>>(async () => {});
 
   // Load settings from AsyncStorage
   useEffect(() => {
@@ -206,13 +207,51 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
   }, []);
 
   const requestPermission = useCallback(async () => {
+    if (Platform.OS === "web") {
+      Alert.alert("Not supported", "Photo library access is only available on a real iOS or Android device.");
+      return;
+    }
+
+    // If already limited on iOS, open the native photo picker to let the user select more photos
+    if (permission === "limited" && Platform.OS === "ios") {
+      try {
+        await MediaLibrary.presentPermissionsPickerAsync();
+        // Re-check permission after the picker closes
+        const { status, accessPrivileges } = await MediaLibrary.getPermissionsAsync();
+        if (status === "granted") {
+          const next = accessPrivileges === "limited" ? "limited" : "granted";
+          setPermission(next);
+          // Reload photos to pick up any newly added ones
+          if (next !== "denied") loadPhotosRef.current();
+        }
+      } catch (_) {
+        // presentPermissionsPickerAsync not available on this OS version — fall back
+        Linking.openSettings();
+      }
+      return;
+    }
+
+    // If denied, the only way is to open system Settings
+    if (permission === "denied") {
+      Alert.alert(
+        "Permission Required",
+        "Photo Finder AI needs access to your photo library. Please enable it in your device Settings.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Open Settings", onPress: () => Linking.openSettings() },
+        ]
+      );
+      return;
+    }
+
+    // First-time or undetermined: request normally
     const { status, accessPrivileges } = await MediaLibrary.requestPermissionsAsync();
     if (status === "granted") {
       setPermission(accessPrivileges === "limited" ? "limited" : "granted");
     } else {
       setPermission(status as PermissionStatus);
     }
-  }, []);
+  }, [permission]);
 
   const loadPhotos = useCallback(async () => {
     if (permission === "denied" || permission === "undetermined") return;
@@ -253,6 +292,11 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       setIsLoading(false);
     }
   }, [permission]);
+
+  // Keep the ref in sync so requestPermission can call loadPhotos without a circular dep
+  useEffect(() => {
+    loadPhotosRef.current = loadPhotos;
+  }, [loadPhotos]);
 
   const loadMorePhotos = useCallback(async () => {
     if (!hasMore || isLoading || permission === "denied") return;
