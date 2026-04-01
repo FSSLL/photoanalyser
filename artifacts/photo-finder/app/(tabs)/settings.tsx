@@ -65,6 +65,9 @@ export default function SettingsScreen() {
     reviewBeforeDelete,
     setReviewBeforeDelete,
     photos,
+    aiProgress,
+    analyzeAllWithAI,
+    cancelAIAnalysis,
   } = usePhotoLibrary();
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
@@ -181,6 +184,88 @@ export default function SettingsScreen() {
         )}
       </View>
 
+      {/* AI Analysis */}
+      <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>AI PHOTO ANALYSIS</Text>
+      <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        {/* Hero status row */}
+        <View style={[styles.aiHero, { borderBottomColor: colors.border }]}>
+          <View style={[styles.aiIconWrap, { backgroundColor: colors.primary + "18" }]}>
+            <Feather name="cpu" size={22} color={colors.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.aiHeroTitle, { color: colors.foreground }]}>Vision AI</Text>
+            <Text style={[styles.aiHeroSub, { color: colors.mutedForeground }]}>
+              {aiProgress.isAnalyzing
+                ? `Analyzing ${aiProgress.analyzed} / ${aiProgress.total} photos…`
+                : aiProgress.analyzed > 0
+                ? `${aiProgress.analyzed} photos analyzed with AI`
+                : "Not yet analyzed — tap Analyze to start"}
+            </Text>
+          </View>
+          {aiProgress.isAnalyzing && (
+            <ActivityIndicator color={colors.primary} size="small" style={{ marginLeft: 8 }} />
+          )}
+          {!aiProgress.isAnalyzing && aiProgress.analyzed > 0 && (
+            <View style={[styles.badge, { backgroundColor: colors.success + "22" }]}>
+              <Text style={[styles.badgeText, { color: colors.success }]}>Active</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Progress bar */}
+        {aiProgress.isAnalyzing && aiProgress.total > 0 && (
+          <View style={[styles.progressBar, { backgroundColor: colors.muted }]}>
+            <View
+              style={[
+                styles.progressFill,
+                {
+                  backgroundColor: colors.primary,
+                  width: `${Math.round((aiProgress.analyzed / aiProgress.total) * 100)}%` as any,
+                },
+              ]}
+            />
+          </View>
+        )}
+
+        {/* Error */}
+        {aiProgress.error && !aiProgress.isAnalyzing && (
+          <View style={[styles.errorBanner, { backgroundColor: colors.destructive + "15" }]}>
+            <Feather name="alert-circle" size={14} color={colors.destructive} />
+            <Text style={[styles.errorText, { color: colors.destructive }]}>{aiProgress.error}</Text>
+          </View>
+        )}
+
+        {/* Action button */}
+        {aiProgress.isAnalyzing ? (
+          <SettingsRow
+            icon="x-circle"
+            title="Cancel Analysis"
+            subtitle="Stop the current AI indexing run"
+            danger
+            onPress={cancelAIAnalysis}
+          />
+        ) : (
+          <SettingsRow
+            icon="zap"
+            title={aiProgress.analyzed > 0 ? "Analyze New Photos" : "Analyze with AI"}
+            subtitle={
+              aiProgress.analyzed > 0
+                ? "Run AI on photos not yet analyzed"
+                : "Use AI vision to precisely detect photo contents"
+            }
+            onPress={permission === "denied" ? undefined : analyzeAllWithAI}
+          />
+        )}
+
+        {aiProgress.lastAnalyzed && (
+          <SettingsRow
+            icon="clock"
+            title="Last AI Analysis"
+            subtitle={new Date(aiProgress.lastAnalyzed).toLocaleString()}
+          />
+        )}
+      </View>
+
       {/* Behavior */}
       <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>BEHAVIOR</Text>
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -238,12 +323,12 @@ export default function SettingsScreen() {
       {/* About */}
       <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>ABOUT</Text>
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <SettingsRow icon="info" title="Version" subtitle="1.0.0 — Phase 1 (Tag-based search)" />
-        <SettingsRow icon="cpu" title="Search Model" subtitle="Mock tag-based (Phase 2: Core ML embeddings)" />
+        <SettingsRow icon="info" title="Version" subtitle="1.1.0 — AI Vision Search" />
+        <SettingsRow icon="cpu" title="Search Engine" subtitle={`Filename tags${aiProgress.analyzed > 0 ? " + AI vision tags" : " (run AI analysis for precision)"}`} />
         <SettingsRow
           icon="lock"
-          title="Privacy Policy"
-          subtitle="Your photos never leave your device in v1"
+          title="Privacy"
+          subtitle="AI analysis sends compressed thumbnails to a private server for processing. Results are stored only on your device."
         />
       </View>
     </ScrollView>
@@ -317,6 +402,46 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   warningText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 18,
+  },
+  aiHero: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    gap: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  aiIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  aiHeroTitle: {
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+  },
+  aiHeroSub: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    marginTop: 2,
+    lineHeight: 17,
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginHorizontal: 12,
+    marginBottom: 4,
+    borderRadius: 10,
+    padding: 10,
+  },
+  errorText: {
     flex: 1,
     fontSize: 12,
     fontFamily: "Inter_400Regular",

@@ -10,6 +10,7 @@ import React, {
   useState,
 } from "react";
 import { Alert, Linking, Platform } from "react-native";
+import { analyzePhoto } from "@/services/aiService";
 
 export type PhotoAsset = {
   id: string;
@@ -32,6 +33,14 @@ export type IndexStatus = {
   indexed: number;
   isIndexing: boolean;
   lastIndexed: number | null;
+};
+
+export type AIAnalysisProgress = {
+  total: number;
+  analyzed: number;
+  isAnalyzing: boolean;
+  lastAnalyzed: number | null;
+  error: string | null;
 };
 
 export type PermissionStatus = "undetermined" | "granted" | "limited" | "denied";
@@ -67,6 +76,9 @@ type PhotoLibraryContextType = {
   setCloudEnabled: (v: boolean) => void;
   reviewBeforeDelete: boolean;
   setReviewBeforeDelete: (v: boolean) => void;
+  aiProgress: AIAnalysisProgress;
+  analyzeAllWithAI: () => Promise<void>;
+  cancelAIAnalysis: () => void;
 };
 
 const PhotoLibraryContext = createContext<PhotoLibraryContextType | null>(null);
@@ -75,6 +87,8 @@ const PAGE_SIZE = 80;
 const RECENT_SIZE = 30;
 const STORAGE_KEY_SEARCHES = "photo_finder_recent_searches";
 const STORAGE_KEY_SETTINGS = "photo_finder_settings";
+const STORAGE_KEY_AI_TAGS = "photo_finder_ai_tags";
+const AI_BATCH_SIZE = 3; // concurrent photos to analyze at once
 
 // Phase 1: Filename-pattern tag assignment.
 // Only uses real metadata (filename, mediaType) — no random/hash-based guessing.
@@ -243,11 +257,21 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
   const [cloudEnabled, setCloudEnabledState] = useState(false);
   const [reviewBeforeDelete, setReviewBeforeDeleteState] = useState(true);
 
+  const [aiProgress, setAIProgress] = useState<AIAnalysisProgress>({
+    total: 0,
+    analyzed: 0,
+    isAnalyzing: false,
+    lastAnalyzed: null,
+    error: null,
+  });
+
   const indexedPhotosRef = useRef<Map<string, string[]>>(new Map());
+  const aiTagsRef = useRef<Map<string, string[]>>(new Map());
+  const aiAbortRef = useRef<AbortController | null>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadPhotosRef = useRef<() => Promise<void>>(async () => {});
 
-  // Load settings from AsyncStorage
+  // Load settings and AI tags from AsyncStorage
   useEffect(() => {
     (async () => {
       try {
@@ -258,6 +282,19 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
           const s = JSON.parse(settings);
           if (typeof s.cloudEnabled === "boolean") setCloudEnabledState(s.cloudEnabled);
           if (typeof s.reviewBeforeDelete === "boolean") setReviewBeforeDeleteState(s.reviewBeforeDelete);
+        }
+        // Load previously AI-analyzed tags so search works immediately on reopen
+        const aiTagsRaw = await AsyncStorage.getItem(STORAGE_KEY_AI_TAGS);
+        if (aiTagsRaw) {
+          const parsed: Record<string, { tags: string[]; ts: number }> = JSON.parse(aiTagsRaw);
+          for (const [id, { tags }] of Object.entries(parsed)) {
+            aiTagsRef.current.set(id, tags);
+          }
+          setAIProgress((prev) => ({
+            ...prev,
+            analyzed: Object.keys(parsed).length,
+            lastAnalyzed: Math.max(...Object.values(parsed).map((v) => v.ts), 0) || null,
+          }));
         }
       } catch (_) {}
     })();
@@ -336,6 +373,16 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     }
   }, [permission]);
 
+  // Build merged tags: AI tags (precise) + filename tags (always available)
+  const buildTags = useCallback((a: MediaLibrary.Asset): string[] => {
+    const aiTags = aiTagsRef.current.get(a.id);
+    const filenameTags = assignMockTags(a);
+    if (aiTags && aiTags.length > 0) {
+      return [...new Set([...aiTags, ...filenameTags])];
+    }
+    return filenameTags;
+  }, []);
+
   const loadPhotos = useCallback(async () => {
     if (permission === "denied" || permission === "undetermined") return;
     setIsLoading(true);
@@ -356,7 +403,8 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         creationTime: a.creationTime,
         modificationTime: a.modificationTime,
         duration: a.duration,
-        tags: indexedPhotosRef.current.get(a.id) || assignMockTags(a),
+        tags: buildTags(a),
+        isIndexed: aiTagsRef.current.has(a.id),
       }));
 
       setPhotos(assets);
@@ -402,7 +450,8 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         creationTime: a.creationTime,
         modificationTime: a.modificationTime,
         duration: a.duration,
-        tags: indexedPhotosRef.current.get(a.id) || assignMockTags(a),
+        tags: buildTags(a),
+        isIndexed: aiTagsRef.current.has(a.id),
       }));
 
       setPhotos((prev) => [...prev, ...newAssets]);
@@ -427,49 +476,135 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     }
   }, [permission]);
 
+  // Keep indexPhotos as a lightweight pass (just filename tags) for backward compat
   const indexPhotos = useCallback(async () => {
     if (permission === "denied" || indexStatus.isIndexing) return;
     setIndexStatus((prev) => ({ ...prev, isIndexing: true }));
-
     try {
       const result = await MediaLibrary.getAssetsAsync({
         mediaType: ["photo", "video"],
         sortBy: [MediaLibrary.SortBy.creationTime],
         first: 500,
       });
-
-      const total = result.totalCount;
-      let indexed = 0;
-
-      for (const asset of result.assets) {
-        const tags = assignMockTags(asset);
-        indexedPhotosRef.current.set(asset.id, tags);
-        indexed++;
-        if (indexed % 50 === 0) {
-          setIndexStatus((prev) => ({ ...prev, total, indexed }));
-          await new Promise((r) => setTimeout(r, 10));
-        }
-      }
-
-      setPhotos((prev) =>
-        prev.map((p) => ({
-          ...p,
-          tags: indexedPhotosRef.current.get(p.id) || p.tags || [],
-          isIndexed: true,
-        }))
-      );
-
-      setIndexStatus({
-        total,
-        indexed,
-        isIndexing: false,
-        lastIndexed: Date.now(),
-      });
+      setPhotos((prev) => prev.map((p) => ({ ...p, isIndexed: aiTagsRef.current.has(p.id) })));
+      setIndexStatus({ total: result.totalCount, indexed: result.assets.length, isIndexing: false, lastIndexed: Date.now() });
     } catch (e) {
       console.warn("indexPhotos error", e);
       setIndexStatus((prev) => ({ ...prev, isIndexing: false }));
     }
   }, [permission, indexStatus.isIndexing]);
+
+  const cancelAIAnalysis = useCallback(() => {
+    if (aiAbortRef.current) {
+      aiAbortRef.current.abort();
+      aiAbortRef.current = null;
+    }
+    setAIProgress((prev) => ({ ...prev, isAnalyzing: false }));
+  }, []);
+
+  const analyzeAllWithAI = useCallback(async () => {
+    if (permission === "denied" || permission === "undetermined") {
+      Alert.alert("Permission needed", "Grant photo library access first.");
+      return;
+    }
+    if (aiProgress.isAnalyzing) return;
+
+    const abort = new AbortController();
+    aiAbortRef.current = abort;
+
+    try {
+      // Gather all assets (all pages)
+      let allAssets: MediaLibrary.Asset[] = [];
+      let after: string | undefined = undefined;
+      let hasNextPage = true;
+      while (hasNextPage) {
+        const page = await MediaLibrary.getAssetsAsync({
+          mediaType: ["photo", "video"],
+          sortBy: [MediaLibrary.SortBy.creationTime],
+          first: 200,
+          after,
+        });
+        allAssets = [...allAssets, ...page.assets];
+        after = page.endCursor;
+        hasNextPage = page.hasNextPage;
+        if (abort.signal.aborted) return;
+      }
+
+      const total = allAssets.length;
+      let analyzed = aiTagsRef.current.size;
+
+      setAIProgress({ total, analyzed, isAnalyzing: true, lastAnalyzed: null, error: null });
+
+      // Load existing AI tags from storage (in case the ref is stale)
+      const existingRaw = await AsyncStorage.getItem(STORAGE_KEY_AI_TAGS).catch(() => "{}");
+      const existingMap: Record<string, { tags: string[]; ts: number }> = JSON.parse(existingRaw || "{}");
+
+      // Only analyze photos that don't already have AI tags
+      const toAnalyze = allAssets.filter((a) => !existingMap[a.id]);
+
+      if (toAnalyze.length === 0) {
+        setAIProgress({ total, analyzed: total, isAnalyzing: false, lastAnalyzed: Date.now(), error: null });
+        return;
+      }
+
+      // Process in batches of AI_BATCH_SIZE
+      for (let i = 0; i < toAnalyze.length; i += AI_BATCH_SIZE) {
+        if (abort.signal.aborted) break;
+
+        const batch = toAnalyze.slice(i, i + AI_BATCH_SIZE);
+        await Promise.allSettled(
+          batch.map(async (asset) => {
+            if (abort.signal.aborted) return;
+            try {
+              // Get asset info with localUri for actual image data
+              const info = await MediaLibrary.getAssetInfoAsync(asset.id);
+              const uri = info.localUri ?? info.uri;
+              const result = await analyzePhoto(uri, abort.signal);
+              if (result.tags.length > 0) {
+                const normalized = result.tags.map((t) => t.toLowerCase().trim());
+                aiTagsRef.current.set(asset.id, normalized);
+                existingMap[asset.id] = { tags: normalized, ts: Date.now() };
+              }
+            } catch (err) {
+              if ((err as Error)?.name !== "AbortError") {
+                console.warn(`AI analysis failed for ${asset.filename}:`, err);
+              }
+            }
+          })
+        );
+
+        analyzed = aiTagsRef.current.size;
+        setAIProgress((prev) => ({ ...prev, analyzed, total }));
+
+        // Persist every batch so progress survives app restarts
+        await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existingMap)).catch(() => {});
+
+        // Small delay to avoid hammering the API
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      if (!abort.signal.aborted) {
+        // Update in-memory photos with AI tags
+        setPhotos((prev) =>
+          prev.map((p) => {
+            const aiTags = aiTagsRef.current.get(p.id);
+            if (!aiTags) return p;
+            return {
+              ...p,
+              tags: [...new Set([...aiTags, ...assignMockTags({ id: p.id, uri: p.uri, filename: p.filename, mediaType: p.mediaType } as MediaLibrary.Asset)])],
+              isIndexed: true,
+            };
+          })
+        );
+        setAIProgress({ total, analyzed: aiTagsRef.current.size, isAnalyzing: false, lastAnalyzed: Date.now(), error: null });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "AI analysis failed";
+      setAIProgress((prev) => ({ ...prev, isAnalyzing: false, error: msg }));
+    } finally {
+      aiAbortRef.current = null;
+    }
+  }, [permission, aiProgress.isAnalyzing]);
 
   const toggleSelect = useCallback((id: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -608,6 +743,9 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     setCloudEnabled,
     reviewBeforeDelete,
     setReviewBeforeDelete,
+    aiProgress,
+    analyzeAllWithAI,
+    cancelAIAnalysis,
   };
 
   return (
