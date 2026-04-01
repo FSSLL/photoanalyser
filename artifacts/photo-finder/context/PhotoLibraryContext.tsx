@@ -97,8 +97,22 @@ const STORAGE_KEY_SETTINGS = "photo_finder_settings";
 const STORAGE_KEY_AI_TAGS = "photo_finder_ai_tags";
 const AI_BATCH_SIZE = 3; // concurrent photos to analyze at once
 
+// iPhone screen widths (logical points) and physical pixel widths for screenshot detection
+const IOS_SCREEN_WIDTHS = new Set([
+  // Logical points (used by media library on some iOS versions)
+  430, 428, 414, 393, 390, 375, 320,
+  // Physical pixels (most common - media library returns these)
+  1320, 1290, 1284, 1242, 1206, 1179, 1170, 1125, 1080, 750, 640,
+]);
+const IOS_SCREEN_HEIGHTS = new Set([
+  // Logical points
+  932, 926, 896, 852, 844, 812, 736, 667, 568,
+  // Physical pixels
+  2868, 2796, 2778, 2732, 2688, 2622, 2556, 2532, 2436, 2208, 1624, 1334, 1136,
+]);
+
 /**
- * Quick synchronous tag assignment using basic filename + mediaType patterns.
+ * Quick synchronous tag assignment using filename, mediaType, and dimensions.
  * Used for photos loaded into the grid before full offline AI analysis runs.
  * The offline AI service provides richer tags (including EXIF) after analysis.
  */
@@ -109,7 +123,33 @@ function quickTagsFromFilename(asset: MediaLibrary.Asset): string[] {
 
   if (asset.mediaType === "video") tags.push("video");
 
-  // Quick filename checks for common patterns
+  // ── Dimension-based detection (reliable, no filename needed) ──────────────
+
+  const w = asset.width ?? 0;
+  const h = asset.height ?? 0;
+  const ratio = w > 0 && h > 0 ? w / h : 1;
+
+  // Exact screen resolution → screenshot (most reliable method on iOS)
+  const isScreenshot =
+    (IOS_SCREEN_WIDTHS.has(w) && IOS_SCREEN_HEIGHTS.has(h)) ||
+    (IOS_SCREEN_WIDTHS.has(h) && IOS_SCREEN_HEIGHTS.has(w));
+
+  if (isScreenshot) {
+    tags.push("screenshot", "screen", "text");
+  }
+
+  // Panorama: very wide aspect ratio
+  if (!isScreenshot && ratio >= 2.5) {
+    tags.push("panorama", "landscape");
+  }
+
+  // Square: social media / food photo
+  if (ratio >= 0.97 && ratio <= 1.03 && w < 1000) {
+    tags.push("square");
+  }
+
+  // ── Filename pattern checks ───────────────────────────────────────────────
+
   const checks: [RegExp, string[]][] = [
     [/screenshot|screen.shot|screen_shot/i, ["screenshot", "screen", "text"]],
     [/screen.rec|recording/i, ["screen recording", "video", "screen"]],
@@ -117,28 +157,35 @@ function quickTagsFromFilename(asset: MediaLibrary.Asset): string[] {
     [/scan|scanned/i, ["scan", "document", "text"]],
     [/receipt|invoice|bill/i, ["receipt", "document", "text"]],
     [/\bid[\s_\-]|id_card|idcard|identity|passport|license|licence/i, ["id", "document", "text", "id card"]],
-    [/selfie/i, ["selfie", "portrait"]],
+    [/selfie/i, ["selfie", "portrait", "person"]],
+    [/front.cam|front_cam/i, ["selfie", "portrait", "person"]],
     [/burst/i, ["burst", "action"]],
     [/panorama|pano/i, ["panorama", "landscape"]],
     [/video|vid_|mov_/i, ["video"]],
-    [/slow.mo|slowmo/i, ["slow motion", "video"]],
-    [/timelapse/i, ["timelapse", "video"]],
+    [/slow.mo|slowmo|slo.mo/i, ["slow motion", "video"]],
+    [/timelapse|time.lapse/i, ["timelapse", "video"]],
     [/document|doc\b/i, ["document", "text"]],
+    [/live.photo|livp/i, ["live photo"]],
+    [/portrait.mode|depth/i, ["portrait", "depth"]],
+    [/qr|barcode/i, ["qr code", "barcode"]],
+    [/meme/i, ["meme", "text"]],
   ];
 
-  let matched = false;
+  let fileMatched = false;
   for (const [pattern, patTags] of checks) {
     if (pattern.test(filename)) {
       tags.push(...patTags);
-      matched = true;
+      fileMatched = true;
     }
   }
 
-  if (!matched && asset.mediaType !== "video") {
+  // Generic photo tag if no specific pattern matched and not a screenshot/video
+  if (!fileMatched && !isScreenshot && asset.mediaType !== "video") {
     tags.push("photo");
   }
 
-  if (["jpg", "jpeg", "heic", "png"].includes(ext) && !tags.includes("photo") && !tags.includes("screenshot")) {
+  // Ensure photo images get the "photo" tag if not already tagged
+  if (["jpg", "jpeg", "heic", "png"].includes(ext) && !tags.includes("photo") && !isScreenshot && !tags.includes("screenshot")) {
     tags.push("photo");
   }
 

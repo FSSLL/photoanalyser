@@ -107,6 +107,8 @@ export default function LibraryScreen() {
   };
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
+  // Tab bar is position:absolute so we must lift action bars above it
+  const tabBarHeight = Platform.OS === "web" ? 84 : Platform.OS === "android" ? 56 + insets.bottom : 49 + insets.bottom;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -164,6 +166,7 @@ export default function LibraryScreen() {
         onLongPress={handleLongPress}
         isSelectMode={isSelectMode}
         onEndReached={hasMore ? loadMorePhotos : undefined}
+        extraBottomPad={isSelectMode ? 82 : 0}
         ListFooterComponent={
           isLoading ? (
             <View style={styles.loadingFooter}>
@@ -192,7 +195,8 @@ export default function LibraryScreen() {
             {
               backgroundColor: colors.card,
               borderTopColor: colors.border,
-              paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) + 10,
+              bottom: tabBarHeight,
+              paddingBottom: 10,
             },
           ]}
         >

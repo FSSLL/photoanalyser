@@ -45,7 +45,8 @@ export default function ReviewScreen() {
     .filter(Boolean) as PhotoAsset[];
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
-  const bottomPad = insets.bottom + (Platform.OS === "web" ? 34 : 0);
+  // Tab bar is position:absolute so we must lift the action bar above it
+  const tabBarHeight = Platform.OS === "web" ? 84 : Platform.OS === "android" ? 56 + insets.bottom : 49 + insets.bottom;
 
   const handleDeletePress = () => {
     if (selectedIds.size === 0) return;
@@ -101,7 +102,7 @@ export default function ReviewScreen() {
             data={selectedPhotos}
             numColumns={3}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={[styles.grid, { paddingBottom: bottomPad + 120 }]}
+            contentContainerStyle={[styles.grid, { paddingBottom: tabBarHeight + 90 }]}
             columnWrapperStyle={styles.row}
             renderItem={({ item }) => (
               <Animated.View entering={FadeIn.duration(200)} style={styles.cellWrap}>
@@ -135,7 +136,8 @@ export default function ReviewScreen() {
               {
                 backgroundColor: colors.card,
                 borderTopColor: colors.border,
-                paddingBottom: bottomPad + 10,
+                bottom: tabBarHeight,
+                paddingBottom: 10,
               },
             ]}
           >

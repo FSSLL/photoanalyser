@@ -31,6 +31,7 @@ type Props = {
   ListFooterComponent?: React.ReactElement;
   ListEmptyComponent?: React.ReactElement;
   showScore?: boolean;
+  extraBottomPad?: number;
 };
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -99,6 +100,7 @@ export default function PhotoGrid({
   ListFooterComponent,
   ListEmptyComponent,
   showScore,
+  extraBottomPad = 0,
 }: Props) {
   const renderItem = useCallback(
     ({ item }: { item: PhotoAsset }) => (
@@ -116,13 +118,15 @@ export default function PhotoGrid({
 
   const keyExtractor = useCallback((item: PhotoAsset) => item.id, []);
 
+  const defaultPadBottom = Platform.OS === "web" ? 34 : 120;
+
   return (
     <FlatList
       data={photos}
       renderItem={renderItem}
       keyExtractor={keyExtractor}
       numColumns={COLS}
-      contentContainerStyle={styles.container}
+      contentContainerStyle={[styles.container, { paddingBottom: defaultPadBottom + extraBottomPad }]}
       columnWrapperStyle={styles.row}
       onEndReached={onEndReached}
       onEndReachedThreshold={0.5}
@@ -139,9 +143,7 @@ export default function PhotoGrid({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    paddingBottom: Platform.OS === "web" ? 34 : 120,
-  },
+  container: {},
   row: {
     gap: GAP,
     marginBottom: GAP,
