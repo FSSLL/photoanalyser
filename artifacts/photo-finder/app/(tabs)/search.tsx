@@ -18,17 +18,17 @@ import { PhotoAsset, usePhotoLibrary } from "@/context/PhotoLibraryContext";
 import { useColors } from "@/hooks/useColors";
 
 const SUGGESTIONS = [
-  "red car",
-  "coffee on a table",
-  "sunset at the beach",
-  "documents with text",
-  "pictures of cats",
-  "selfies",
   "screenshots",
-  "food",
-  "nature landscape",
-  "people smiling",
+  "selfies",
   "videos",
+  "documents",
+  "ID",
+  "receipts",
+  "scans",
+  "WhatsApp",
+  "panoramas",
+  "slow motion",
+  "live photos",
 ];
 
 const SORT_OPTIONS: { key: "match" | "newest" | "oldest"; label: string }[] = [
@@ -58,11 +58,22 @@ export default function SearchScreen() {
 
   const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
 
+  // Only update the live query — do NOT save to recents on every keystroke
   const handleSearch = (q: string) => {
     setSearchQuery(q);
-    if (q.trim()) {
-      addRecentSearch(q.trim());
+  };
+
+  // Save to recents only when the user explicitly submits (presses Return/Search)
+  const handleSubmit = () => {
+    if (searchQuery.trim()) {
+      addRecentSearch(searchQuery.trim());
     }
+  };
+
+  // Tap a suggestion or a recent item → set query AND save to recents
+  const handleSuggestionTap = (q: string) => {
+    setSearchQuery(q);
+    addRecentSearch(q);
   };
 
   const handlePhotoPress = (photo: PhotoAsset) => {
@@ -85,6 +96,7 @@ export default function SearchScreen() {
             placeholderTextColor={colors.mutedForeground}
             value={searchQuery}
             onChangeText={handleSearch}
+            onSubmitEditing={handleSubmit}
             returnKeyType="search"
             autoCorrect={false}
             autoCapitalize="none"
@@ -167,7 +179,7 @@ export default function SearchScreen() {
               {recentSearches.map((s) => (
                 <Pressable
                   key={s}
-                  onPress={() => handleSearch(s)}
+                  onPress={() => handleSuggestionTap(s)}
                   style={[styles.recentItem, { borderBottomColor: colors.border }]}
                 >
                   <Feather name="clock" size={15} color={colors.mutedForeground} />
@@ -185,7 +197,7 @@ export default function SearchScreen() {
               {SUGGESTIONS.map((s) => (
                 <Pressable
                   key={s}
-                  onPress={() => handleSearch(s)}
+                  onPress={() => handleSuggestionTap(s)}
                   style={[styles.suggestionChip, { backgroundColor: colors.accent, borderColor: colors.border }]}
                 >
                   <Feather name="search" size={12} color={colors.primary} />

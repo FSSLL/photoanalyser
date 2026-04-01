@@ -76,60 +76,143 @@ const RECENT_SIZE = 30;
 const STORAGE_KEY_SEARCHES = "photo_finder_recent_searches";
 const STORAGE_KEY_SETTINGS = "photo_finder_settings";
 
-// Mock tags for semantic search (Phase 1) — swap for real embedding model in Phase 2
-const MOCK_TAG_CATEGORIES: Record<string, string[]> = {
-  nature: ["nature", "outdoor", "landscape", "sky", "tree", "forest", "mountain", "beach", "sunset", "sunrise", "ocean", "river", "lake", "grass", "flowers", "garden", "park"],
-  people: ["person", "people", "selfie", "portrait", "face", "smile", "group", "family", "friends", "baby", "child", "man", "woman"],
-  food: ["food", "meal", "coffee", "drink", "restaurant", "cooking", "kitchen", "breakfast", "lunch", "dinner", "dessert", "cake", "pizza"],
-  animals: ["cat", "dog", "pet", "animal", "bird", "fish", "wildlife", "puppy", "kitten"],
-  transportation: ["car", "vehicle", "road", "street", "travel", "airport", "plane", "train", "bus", "bike", "motorcycle"],
-  architecture: ["building", "city", "urban", "architecture", "house", "room", "interior", "window", "door"],
-  technology: ["phone", "computer", "screen", "technology", "device", "gadget"],
-  text: ["document", "text", "sign", "screenshot", "receipt", "book", "paper", "note", "whiteboard"],
-  events: ["party", "event", "celebration", "wedding", "birthday", "concert", "sport", "festival"],
-  art: ["art", "painting", "drawing", "design", "creative", "abstract", "colorful"],
+// Phase 1: Filename-pattern tag assignment.
+// Only uses real metadata (filename, mediaType) — no random/hash-based guessing.
+// Swap assignMockTags() for a real Vision/Core ML embedder in Phase 2.
+
+// Map common filename patterns to descriptive tags
+const FILENAME_RULES: Array<{ pattern: RegExp; tags: string[] }> = [
+  { pattern: /screenshot|screen.shot|screen_shot/i, tags: ["screenshot", "screen", "text"] },
+  { pattern: /screen.rec|recording/i, tags: ["screen recording", "video", "screen"] },
+  { pattern: /whatsapp|telegram|signal|imessage/i, tags: ["message", "chat", "conversation"] },
+  { pattern: /scan|scanned|scanning/i, tags: ["scan", "document", "text"] },
+  { pattern: /receipt|invoice|bill/i, tags: ["receipt", "document", "text"] },
+  { pattern: /document|doc\b/i, tags: ["document", "text"] },
+  { pattern: /\bid[\s_-]|id_card|idcard|identity|passport|license|licence/i, tags: ["id", "document", "text", "id card"] },
+  { pattern: /selfie/i, tags: ["selfie", "portrait"] },
+  { pattern: /front.cam|front_cam/i, tags: ["selfie", "portrait"] },
+  { pattern: /burst/i, tags: ["burst", "action"] },
+  { pattern: /panorama|pano/i, tags: ["panorama", "landscape"] },
+  { pattern: /raw\b|\.raw|\.dng/i, tags: ["raw", "photo"] },
+  { pattern: /video|vid_|mov_|movie/i, tags: ["video"] },
+  { pattern: /live.photo|livp/i, tags: ["live photo", "photo"] },
+  { pattern: /portrait.mode|depth/i, tags: ["portrait", "depth"] },
+  { pattern: /slow.mo|slowmo|slo-mo/i, tags: ["slow motion", "video"] },
+  { pattern: /timelapse|time.lapse/i, tags: ["timelapse", "video"] },
+];
+
+// Search query aliases: expand common user search terms to better-matched tags
+const SEARCH_ALIASES: Record<string, string[]> = {
+  "id": ["id", "id card", "document", "identity", "passport", "license"],
+  "ids": ["id", "id card", "document", "identity"],
+  "id card": ["id", "id card", "document", "identity"],
+  "passport": ["id", "id card", "document", "passport"],
+  "license": ["id", "document", "license"],
+  "doc": ["document", "text", "scan"],
+  "docs": ["document", "text", "scan"],
+  "document": ["document", "text", "scan", "receipt"],
+  "receipt": ["receipt", "document", "text"],
+  "text": ["text", "document", "screenshot", "scan"],
+  "screenshot": ["screenshot", "screen"],
+  "screenshots": ["screenshot", "screen"],
+  "screen": ["screenshot", "screen"],
+  "vid": ["video"],
+  "vids": ["video"],
+  "videos": ["video"],
+  "movie": ["video"],
+  "selfie": ["selfie", "portrait"],
+  "selfies": ["selfie", "portrait"],
+  "portrait": ["selfie", "portrait"],
+  "chat": ["message", "chat", "conversation"],
+  "message": ["message", "chat", "conversation"],
+  "whatsapp": ["message", "chat", "whatsapp"],
+  "scan": ["scan", "document", "text"],
+  "slow motion": ["slow motion", "video"],
+  "slow mo": ["slow motion", "video"],
+  "live photo": ["live photo", "photo"],
+  "panorama": ["panorama", "landscape"],
+  "pano": ["panorama", "landscape"],
 };
 
 function assignMockTags(asset: MediaLibrary.Asset): string[] {
   const tags: string[] = [];
   const filename = (asset.filename || "").toLowerCase();
+  const ext = filename.split(".").pop() || "";
 
-  if (filename.includes("img_") || filename.includes("photo")) tags.push("photo");
-  if (filename.includes("screenshot")) {
-    tags.push("screenshot", "text", "screen");
-  }
-  if (filename.includes("selfie") || filename.includes("front")) {
-    tags.push("selfie", "portrait", "people");
-  }
-  if (filename.includes("video") || asset.mediaType === "video") {
+  // Video mediaType is reliable
+  if (asset.mediaType === "video") {
     tags.push("video");
   }
 
-  // Add some random-ish category tags based on the asset id for demo variety
-  const hash = asset.id.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  const categoryKeys = Object.keys(MOCK_TAG_CATEGORIES);
-  const primaryCat = categoryKeys[hash % categoryKeys.length];
-  const secondaryCat = categoryKeys[(hash * 3 + 7) % categoryKeys.length];
-  tags.push(...(MOCK_TAG_CATEGORIES[primaryCat] || []).slice(0, 3));
-  tags.push(...(MOCK_TAG_CATEGORIES[secondaryCat] || []).slice(0, 2));
+  // Apply filename pattern rules
+  let matched = false;
+  for (const rule of FILENAME_RULES) {
+    if (rule.pattern.test(filename)) {
+      tags.push(...rule.tags);
+      matched = true;
+    }
+  }
+
+  // Generic photo tag if no specific pattern matched
+  if (!matched && asset.mediaType !== "video") {
+    tags.push("photo");
+  }
+
+  // Extension-based hints
+  if (["jpg", "jpeg", "heic", "png"].includes(ext) && !tags.includes("photo")) {
+    tags.push("photo");
+  }
 
   return [...new Set(tags)];
 }
 
+function expandQuery(words: string[]): string[] {
+  const expanded = new Set<string>(words);
+  // Also check multi-word combos (e.g., "id card")
+  const fullQuery = words.join(" ");
+  if (SEARCH_ALIASES[fullQuery]) {
+    SEARCH_ALIASES[fullQuery].forEach((t) => expanded.add(t));
+  }
+  for (const word of words) {
+    const aliases = SEARCH_ALIASES[word];
+    if (aliases) aliases.forEach((t) => expanded.add(t));
+  }
+  return [...expanded];
+}
+
 function searchPhotos(photos: PhotoAsset[], query: string): PhotoAsset[] {
   if (!query.trim()) return [];
-  const words = query.toLowerCase().trim().split(/\s+/);
+  const rawWords = query.toLowerCase().trim().split(/\s+/);
+  const searchTerms = expandQuery(rawWords);
 
   const scored = photos
     .map((photo) => {
       const tags = photo.tags || [];
       const filename = (photo.filename || "").toLowerCase();
+      // Split filename into words for accurate matching
+      const fileWords = filename.split(/[\s_\-./]+/).filter(Boolean);
       let score = 0;
-      for (const word of words) {
-        if (tags.some((t) => t.includes(word))) score += 10;
-        if (filename.includes(word)) score += 5;
-        if (tags.some((t) => word.includes(t))) score += 3;
+
+      for (const term of searchTerms) {
+        // Exact tag match — highest confidence
+        if (tags.includes(term)) {
+          score += 15;
+          continue;
+        }
+        // Tag starts with search term (minimum 3 chars to avoid noise)
+        if (term.length >= 3 && tags.some((t) => t.startsWith(term))) {
+          score += 8;
+        }
+        // Exact word in filename
+        if (fileWords.includes(term)) {
+          score += 12;
+        }
+        // Filename contains term as substring (only if term is 3+ chars)
+        if (term.length >= 3 && filename.includes(term)) {
+          score += 5;
+        }
       }
+
       return { photo, score };
     })
     .filter((x) => x.score > 0)
