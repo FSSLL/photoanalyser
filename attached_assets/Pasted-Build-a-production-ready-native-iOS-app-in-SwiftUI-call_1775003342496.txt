@@ -1,0 +1,160 @@
+Build a production-ready native iOS app in SwiftUI called Photo Finder AI.
+
+Goal:
+Create an iPhone app that can:
+
+Request access to the user’s photo library.
+Read and index the user’s photos locally.
+Let the user search photos by natural-language descriptions such as:
+“red car”
+“coffee cup on a table”
+“sunset at the beach”
+“documents with text”
+“pictures of cats”
+Show matching photo results in a fast grid UI.
+Open a photo in detail view.
+Allow the user to select one or multiple photos and delete them safely with confirmation.
+Keep privacy-first behavior: do not upload any photos unless explicitly enabled later.
+
+Technical requirements:
+
+Use SwiftUI for the full UI.
+Use PhotoKit for photo library access, fetching assets, thumbnails, metadata, and deletion.
+Support both full photo access and limited photo access.
+Use PHPhotoLibrary authorization flow properly.
+Use PHCachingImageManager or equivalent thumbnail caching for performance.
+Use Vision + Core ML for image understanding.
+Build a local indexing pipeline:
+fetch photos from the library
+generate image embeddings or tags for each image
+store searchable index locally in SQLite or Core Data
+allow re-indexing and incremental updates when the library changes
+Add PHPhotoLibraryChangeObserver support so the index stays synced if the gallery changes.
+For text search:
+convert the text prompt into a comparable embedding or searchable representation
+rank results by similarity score
+show confidence or relevance score if available
+If a true multimodal text-image embedding model is not available by default, structure the app with a clean abstraction so I can later swap in:
+an on-device Core ML model
+or a private backend embedding API
+The first version should default to fully local / on-device processing as much as possible.
+
+Deletion behavior:
+
+User must be able to:
+select one photo
+select multiple photos
+delete selected photos
+Always show a confirmation sheet before deletion.
+Use the correct PhotoKit delete flow.
+Handle failure states clearly.
+Never auto-delete anything without explicit user action.
+Add an optional “Review before delete” mode.
+
+UI requirements:
+
+Modern premium iOS style
+Tab layout:
+Library
+Search
+Review/Delete
+Settings
+Library tab:
+recent photos grid
+filter by screenshots, selfies, videos, favorites, duplicates placeholder
+Search tab:
+large search bar
+prompt suggestions
+recent searches
+results grid
+sort by best match / newest / oldest
+Detail view:
+full-screen image
+metadata if available
+similarity reason or tags if available
+delete button
+Review/Delete tab:
+selected items
+batch delete
+clear selection
+Settings tab:
+photo access status
+reindex library
+index progress
+storage usage estimate
+privacy explanation
+toggle for future cloud processing, default OFF
+
+Architecture requirements:
+
+MVVM structure
+Separate services for:
+Photo library access
+Indexing
+Search
+Deletion
+Permissions
+Write clean, modular Swift code with comments.
+Include robust error handling and loading states.
+Include mock fallback logic if the embedding model is unavailable.
+Add testable protocols around services.
+
+Important privacy and product rules:
+
+Everything should be designed as privacy-first.
+No server upload in v1.
+No hidden background deletion.
+No silent destructive actions.
+Explain permissions clearly to the user.
+Handle limited-library mode gracefully.
+If only limited access is granted, search only the permitted assets and show a UI to manage access.
+
+Deliverables:
+
+Full SwiftUI iOS project structure
+All source files
+App entry point
+Models
+ViewModels
+Services
+Example local storage/index schema
+Placeholder embedding service interface
+Sample mock search implementation so the app can run before the real semantic model is added
+Clear setup instructions for Xcode
+List of required Info.plist privacy keys
+Notes on what must be completed in Xcode/Apple Developer to run on a real iPhone
+
+Important:
+Do not build this as a web app.
+Do not build this as a generic React website.
+This must be a real native iOS app using SwiftUI and PhotoKit.
+If some advanced semantic search pieces need a placeholder first, scaffold them cleanly so they can be upgraded later without rewriting the app.
+
+Best-effort versioning:
+Phase 1:
+
+permissions
+fetch gallery
+thumbnails
+selection
+deletion
+simple local tags / mock search
+
+Phase 2:
+
+real semantic text-to-image search with embeddings
+
+Phase 3:
+
+duplicate detection
+smart cleanup suggestions
+OCR search for text inside images
+face/person clustering only if privacy-safe and allowed
+
+Extra request:
+At the end, give me:
+
+project folder tree
+setup instructions
+which parts are fully working now
+which parts are placeholders pending the semantic model
