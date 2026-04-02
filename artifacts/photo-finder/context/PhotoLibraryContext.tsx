@@ -19,6 +19,7 @@ import {
 } from "@/services/offlineAIService";
 import {
   analyzePhotoWithGemini,
+  getEmbeddedApiKey,
   getGeminiApiKey,
   getGeminiEnabled,
   saveGeminiApiKey,
@@ -449,10 +450,17 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
           if (typeof s.cloudEnabled === "boolean") setCloudEnabledState(s.cloudEnabled);
           if (typeof s.reviewBeforeDelete === "boolean") setReviewBeforeDeleteState(s.reviewBeforeDelete);
         }
-        // Load Gemini settings
-        const [geminiKey, geminiOn] = await Promise.all([getGeminiApiKey(), getGeminiEnabled()]);
-        if (geminiKey) setGeminiApiKeyState(geminiKey);
-        setGeminiEnabledState(geminiOn);
+        // Load Gemini settings — embedded build-time key takes priority over any stored key
+        const embeddedKey = getEmbeddedApiKey();
+        const [storedKey, geminiOn] = await Promise.all([getGeminiApiKey(), getGeminiEnabled()]);
+        const resolvedKey = embeddedKey.trim() || storedKey;
+        if (resolvedKey) setGeminiApiKeyState(resolvedKey);
+        // Auto-enable Gemini when a key is embedded at build time
+        if (embeddedKey.trim()) {
+          setGeminiEnabledState(true);
+        } else {
+          setGeminiEnabledState(geminiOn);
+        }
         // Load previously AI-analyzed tags so search works immediately on reopen
         const aiTagsRaw = await AsyncStorage.getItem(STORAGE_KEY_AI_TAGS);
         if (aiTagsRaw) {
