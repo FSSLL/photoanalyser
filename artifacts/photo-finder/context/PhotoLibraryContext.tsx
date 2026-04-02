@@ -17,6 +17,13 @@ import {
   getModelConfig,
   getCurrentModelVersion,
 } from "@/services/offlineAIService";
+import {
+  analyzePhotoWithGemini,
+  getGeminiApiKey,
+  getGeminiEnabled,
+  saveGeminiApiKey,
+  saveGeminiEnabled,
+} from "@/services/geminiVisionService";
 
 export type PhotoAsset = {
   id: string;
@@ -88,6 +95,10 @@ type PhotoLibraryContextType = {
   modelVersion: string;
   checkForModelUpdate: () => Promise<{ updated: boolean; version: string }>;
   cancelAIAnalysis: () => void;
+  geminiEnabled: boolean;
+  setGeminiEnabled: (v: boolean) => Promise<void>;
+  geminiApiKey: string;
+  setGeminiApiKey: (key: string) => Promise<void>;
 };
 
 const PhotoLibraryContext = createContext<PhotoLibraryContextType | null>(null);
@@ -196,32 +207,121 @@ function quickTagsFromFilename(asset: MediaLibrary.Asset): string[] {
 
 // In-memory search aliases cache — populated from offline AI config on load
 let _searchAliasesCache: Record<string, string[]> = {
-  "id": ["id", "id card", "document", "identity", "passport", "license"],
-  "ids": ["id", "id card", "document", "identity"],
-  "id card": ["id", "id card", "document", "identity"],
-  "passport": ["id", "id card", "document", "passport"],
-  "license": ["id", "document", "license"],
-  "doc": ["document", "text", "scan"],
-  "document": ["document", "text", "scan", "receipt"],
-  "receipt": ["receipt", "document", "text"],
+  // ── People ──────────────────────────────────────────────────────────────────
+  "girl":       ["person", "woman", "girl", "child", "female", "people", "face", "portrait"],
+  "girls":      ["person", "woman", "girl", "child", "female", "people", "face", "portrait"],
+  "boy":        ["person", "man", "boy", "child", "male", "people", "face", "portrait"],
+  "boys":       ["person", "man", "boy", "child", "male", "people", "face", "portrait"],
+  "woman":      ["person", "woman", "female", "people", "face", "portrait"],
+  "women":      ["person", "woman", "female", "people", "face", "portrait"],
+  "man":        ["person", "man", "male", "people", "face", "portrait"],
+  "men":        ["person", "man", "male", "people", "face", "portrait"],
+  "baby":       ["baby", "child", "person", "people", "toddler"],
+  "babies":     ["baby", "child", "person", "people", "toddler"],
+  "infant":     ["baby", "child", "person", "people"],
+  "toddler":    ["baby", "child", "person", "people"],
+  "toddlers":   ["baby", "child", "person", "people"],
+  "kid":        ["child", "person", "people", "boy", "girl"],
+  "kids":       ["child", "person", "people", "boy", "girl"],
+  "child":      ["child", "person", "people", "boy", "girl", "baby"],
+  "children":   ["child", "person", "people", "boy", "girl"],
+  "teen":       ["person", "people", "face", "portrait"],
+  "teenager":   ["person", "people", "face", "portrait"],
+  "elderly":    ["person", "people", "face", "portrait"],
+  "senior":     ["person", "people", "face", "portrait"],
+  "couple":     ["couple", "person", "people", "portrait", "face"],
+  "couples":    ["couple", "person", "people", "portrait"],
+  "family":     ["family", "person", "people", "group", "portrait", "child"],
+  "families":   ["family", "person", "people", "group", "child"],
+  "group":      ["group", "person", "people", "crowd"],
+  "groups":     ["group", "person", "people", "crowd"],
+  "crowd":      ["crowd", "person", "people", "group"],
+  "people":     ["person", "people", "crowd", "group"],
+  "person":     ["person", "people", "face"],
+  "friend":     ["person", "people", "portrait", "selfie"],
+  "friends":    ["person", "people", "portrait", "selfie"],
+  "face":       ["person", "portrait", "face", "selfie"],
+  "faces":      ["person", "portrait", "face"],
+  "selfie":     ["selfie", "portrait", "person", "face"],
+  "selfies":    ["selfie", "portrait", "person"],
+  "portrait":   ["selfie", "portrait", "person", "face"],
+  // ── Documents & IDs ─────────────────────────────────────────────────────────
+  "id":         ["id", "id card", "document", "identity", "passport", "license"],
+  "ids":        ["id", "id card", "document", "identity"],
+  "id card":    ["id", "id card", "document", "identity"],
+  "passport":   ["id", "id card", "document", "passport"],
+  "license":    ["id", "document", "license"],
+  "doc":        ["document", "text", "scan"],
+  "document":   ["document", "text", "scan", "receipt"],
+  "receipt":    ["receipt", "document", "text"],
   "screenshot": ["screenshot", "screen"],
-  "screenshots": ["screenshot", "screen"],
-  "screen": ["screenshot", "screen"],
-  "vid": ["video"],
-  "vids": ["video"],
-  "videos": ["video"],
-  "selfie": ["selfie", "portrait"],
-  "selfies": ["selfie", "portrait"],
-  "portrait": ["selfie", "portrait"],
-  "chat": ["message", "chat", "conversation"],
-  "message": ["message", "chat", "conversation"],
-  "scan": ["scan", "document", "text"],
-  "panorama": ["panorama", "landscape"],
-  "pano": ["panorama", "landscape"],
-  "night": ["night", "dark", "long exposure"],
-  "outdoor": ["outdoor", "location", "nature"],
-  "outdoors": ["outdoor", "location", "nature"],
-  "indoor": ["indoor", "flash"],
+  "screenshots":["screenshot", "screen"],
+  "screen":     ["screenshot", "screen"],
+  "scan":       ["scan", "document", "text"],
+  // ── Videos ───────────────────────────────────────────────────────────────────
+  "vid":        ["video"],
+  "vids":       ["video"],
+  "videos":     ["video"],
+  // ── Messaging ────────────────────────────────────────────────────────────────
+  "chat":       ["message", "chat", "conversation"],
+  "message":    ["message", "chat", "conversation"],
+  // ── Places ───────────────────────────────────────────────────────────────────
+  "panorama":   ["panorama", "landscape"],
+  "pano":       ["panorama", "landscape"],
+  "night":      ["night", "dark", "long exposure"],
+  "outdoor":    ["outdoor", "location", "nature"],
+  "outdoors":   ["outdoor", "location", "nature"],
+  "indoor":     ["indoor", "flash"],
+  "beach":      ["beach", "outdoor", "water", "ocean", "sand"],
+  "ocean":      ["ocean", "water", "outdoor", "beach"],
+  "sea":        ["ocean", "water", "outdoor", "beach"],
+  "water":      ["water", "outdoor", "ocean", "river"],
+  "mountain":   ["mountain", "outdoor", "nature", "landscape"],
+  "mountains":  ["mountain", "outdoor", "nature", "landscape"],
+  "forest":     ["forest", "tree", "outdoor", "nature"],
+  "nature":     ["nature", "outdoor", "tree", "plant", "flower", "landscape"],
+  "sky":        ["sky", "outdoor", "cloud"],
+  "clouds":     ["cloud", "sky", "outdoor"],
+  "sunset":     ["sunset", "outdoor", "sky"],
+  "sunrise":    ["sunrise", "outdoor", "sky"],
+  "snow":       ["snow", "outdoor", "winter"],
+  "winter":     ["snow", "winter", "outdoor"],
+  "city":       ["city", "urban", "building", "outdoor", "street"],
+  "street":     ["street", "city", "urban", "outdoor"],
+  // ── Activities & events ──────────────────────────────────────────────────────
+  "vacation":   ["outdoor", "travel", "beach", "landscape", "nature"],
+  "holiday":    ["outdoor", "travel", "celebration", "nature"],
+  "travel":     ["travel", "outdoor", "landscape", "building", "city"],
+  "birthday":   ["celebration", "cake", "food", "person", "party"],
+  "wedding":    ["wedding", "celebration", "couple", "person", "outdoor", "portrait"],
+  "party":      ["party", "people", "celebration", "person", "group"],
+  "celebration":["celebration", "party", "person", "people"],
+  "graduation": ["celebration", "person", "group", "portrait"],
+  "workout":    ["fitness", "sport", "activity", "outdoor"],
+  "exercise":   ["fitness", "sport", "activity"],
+  "gym":        ["fitness", "sport", "indoor"],
+  "sport":      ["sport", "fitness", "activity", "outdoor"],
+  "sports":     ["sport", "fitness", "activity", "outdoor"],
+  "running":    ["fitness", "sport", "outdoor", "activity"],
+  "swimming":   ["fitness", "sport", "water", "outdoor"],
+  // ── Food ─────────────────────────────────────────────────────────────────────
+  "food":       ["food", "meal", "fruit", "vegetable", "restaurant"],
+  "meal":       ["food", "meal"],
+  "restaurant": ["food", "meal", "restaurant"],
+  "coffee":     ["coffee", "drink", "food"],
+  "drink":      ["drink", "coffee", "food"],
+  "fruit":      ["fruit", "food"],
+  "cake":       ["cake", "dessert", "food"],
+  "dessert":    ["dessert", "cake", "food"],
+  // ── Animals ───────────────────────────────────────────────────────────────────
+  "animal":     ["animal", "dog", "cat", "bird", "pet"],
+  "animals":    ["animal", "dog", "cat", "bird", "pet"],
+  "pet":        ["pet", "dog", "cat", "animal"],
+  "pets":       ["pet", "dog", "cat", "animal"],
+  "dog":        ["dog", "animal", "pet"],
+  "dogs":       ["dog", "animal", "pet"],
+  "cat":        ["cat", "animal", "pet"],
+  "cats":       ["cat", "animal", "pet"],
 };
 
 /**
@@ -327,8 +427,12 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     error: null,
   });
 
+  const [geminiEnabled, setGeminiEnabledState] = useState(false);
+  const [geminiApiKey, setGeminiApiKeyState] = useState("");
+
   const indexedPhotosRef = useRef<Map<string, string[]>>(new Map());
   const aiTagsRef = useRef<Map<string, string[]>>(new Map());
+  const aiDescRef = useRef<Map<string, string>>(new Map());
   const aiAbortRef = useRef<AbortController | null>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadPhotosRef = useRef<() => Promise<void>>(async () => {});
@@ -345,12 +449,17 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
           if (typeof s.cloudEnabled === "boolean") setCloudEnabledState(s.cloudEnabled);
           if (typeof s.reviewBeforeDelete === "boolean") setReviewBeforeDeleteState(s.reviewBeforeDelete);
         }
+        // Load Gemini settings
+        const [geminiKey, geminiOn] = await Promise.all([getGeminiApiKey(), getGeminiEnabled()]);
+        if (geminiKey) setGeminiApiKeyState(geminiKey);
+        setGeminiEnabledState(geminiOn);
         // Load previously AI-analyzed tags so search works immediately on reopen
         const aiTagsRaw = await AsyncStorage.getItem(STORAGE_KEY_AI_TAGS);
         if (aiTagsRaw) {
-          const parsed: Record<string, { tags: string[]; ts: number }> = JSON.parse(aiTagsRaw);
-          for (const [id, { tags }] of Object.entries(parsed)) {
+          const parsed: Record<string, { tags: string[]; description?: string; ts: number }> = JSON.parse(aiTagsRaw);
+          for (const [id, { tags, description }] of Object.entries(parsed)) {
             aiTagsRef.current.set(id, tags);
+            if (description) aiDescRef.current.set(id, description);
           }
           setAIProgress((prev) => ({
             ...prev,
@@ -374,6 +483,16 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     const settings = await AsyncStorage.getItem(STORAGE_KEY_SETTINGS).catch(() => "{}");
     const parsed = JSON.parse(settings || "{}");
     await AsyncStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify({ ...parsed, reviewBeforeDelete: v })).catch(() => {});
+  }, []);
+
+  const setGeminiEnabled = useCallback(async (v: boolean) => {
+    setGeminiEnabledState(v);
+    await saveGeminiEnabled(v);
+  }, []);
+
+  const setGeminiApiKey = useCallback(async (key: string) => {
+    setGeminiApiKeyState(key);
+    await saveGeminiApiKey(key);
   }, []);
 
   // Check permission on mount
@@ -583,6 +702,23 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     }
   }, [permission]);
 
+  // Auto-start AI analysis in background once photos load for the first time
+  const hasAutoAnalyzedRef = useRef(false);
+  useEffect(() => {
+    if (
+      photos.length > 0 &&
+      !hasAutoAnalyzedRef.current &&
+      !aiProgress.isAnalyzing &&
+      (permission === "granted" || permission === "limited")
+    ) {
+      hasAutoAnalyzedRef.current = true;
+      const timer = setTimeout(() => {
+        analyzeAllWithAI();
+      }, 2500);
+      return () => clearTimeout(timer);
+    }
+  }, [photos.length > 0]);
+
   // Keep indexPhotos as a lightweight pass (just filename tags) for backward compat
   const indexPhotos = useCallback(async () => {
     if (permission === "denied" || indexStatus.isIndexing) return;
@@ -619,6 +755,9 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     const abort = new AbortController();
     aiAbortRef.current = abort;
 
+    // Snapshot Gemini settings at start of run
+    const useGemini = geminiEnabled && geminiApiKey.trim().length > 0;
+
     try {
       // Gather all assets (all pages)
       let allAssets: MediaLibrary.Asset[] = [];
@@ -644,35 +783,70 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
 
       // Load existing AI tags from storage (in case the ref is stale)
       const existingRaw = await AsyncStorage.getItem(STORAGE_KEY_AI_TAGS).catch(() => "{}");
-      const existingMap: Record<string, { tags: string[]; ts: number }> = JSON.parse(existingRaw || "{}");
+      const existingMap: Record<string, { tags: string[]; description?: string; ts: number }> = JSON.parse(existingRaw || "{}");
 
-      // Only analyze photos that don't already have AI tags
-      const toAnalyze = allAssets.filter((a) => !existingMap[a.id]);
+      // Photos to analyze: new ones, or ones that haven't had Gemini run (if Gemini just enabled)
+      const toAnalyze = allAssets.filter((a) => {
+        if (!existingMap[a.id]) return true;
+        if (useGemini && !existingMap[a.id].description) return true;
+        return false;
+      });
 
       if (toAnalyze.length === 0) {
         setAIProgress({ total, analyzed: total, isAnalyzing: false, lastAnalyzed: Date.now(), error: null });
         return;
       }
 
-      // Process photos one at a time (offline analysis reads EXIF per photo)
-      for (let i = 0; i < toAnalyze.length; i += AI_BATCH_SIZE) {
+      // Process in batches — Gemini runs sequentially per photo (1 at a time to respect rate limits)
+      const batchSize = useGemini ? 1 : AI_BATCH_SIZE;
+
+      for (let i = 0; i < toAnalyze.length; i += batchSize) {
         if (abort.signal.aborted) break;
 
-        const batch = toAnalyze.slice(i, i + AI_BATCH_SIZE);
+        const batch = toAnalyze.slice(i, i + batchSize);
         await Promise.allSettled(
           batch.map(async (asset) => {
             if (abort.signal.aborted) return;
             try {
-              // All analysis is on-device — no photos are sent anywhere
+              // Step 1: On-device analysis (EXIF + filename + ML Kit)
               const result = await analyzePhotoOffline(asset, abort.signal);
-              if (result.tags.length > 0) {
-                const normalized = result.tags.map((t) => t.toLowerCase().trim());
-                aiTagsRef.current.set(asset.id, normalized);
-                existingMap[asset.id] = { tags: normalized, ts: Date.now() };
+              let finalTags = result.tags.map((t) => t.toLowerCase().trim());
+              let finalDescription: string | undefined;
+
+              // Step 2: Gemini Vision — deep AI understanding of photo content
+              if (useGemini && asset.mediaType !== "video" && !abort.signal.aborted) {
+                try {
+                  const geminiResult = await analyzePhotoWithGemini(
+                    asset.uri,
+                    geminiApiKey.trim(),
+                    abort.signal
+                  );
+                  if (geminiResult.success) {
+                    // Merge Gemini tags with offline tags
+                    finalTags = [...new Set([...finalTags, ...geminiResult.tags])];
+                    finalDescription = geminiResult.richText || geminiResult.description;
+                    if (finalDescription) {
+                      aiDescRef.current.set(asset.id, finalDescription);
+                    }
+                  }
+                } catch (geminiErr) {
+                  if ((geminiErr as Error)?.name !== "AbortError") {
+                    console.warn(`Gemini failed for ${asset.filename}:`, geminiErr);
+                  }
+                }
+              }
+
+              if (finalTags.length > 0) {
+                aiTagsRef.current.set(asset.id, finalTags);
+                existingMap[asset.id] = {
+                  tags: finalTags,
+                  description: finalDescription,
+                  ts: Date.now(),
+                };
               }
             } catch (err) {
               if ((err as Error)?.name !== "AbortError") {
-                console.warn(`Offline AI analysis failed for ${asset.filename}:`, err);
+                console.warn(`Analysis failed for ${asset.filename}:`, err);
               }
             }
           })
@@ -684,21 +858,27 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         // Persist every batch so progress survives app restarts
         await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existingMap)).catch(() => {});
 
-        // Small delay to avoid hammering the API
-        await new Promise((r) => setTimeout(r, 300));
+        // Rate-limit delay: shorter for offline-only, slightly longer for Gemini
+        await new Promise((r) => setTimeout(r, useGemini ? 800 : 300));
       }
 
       if (!abort.signal.aborted) {
-        // Update in-memory photos with AI tags + regenerate description
+        // Update in-memory photos with final tags + rich descriptions
         setPhotos((prev) =>
           prev.map((p) => {
             const aiTags = aiTagsRef.current.get(p.id);
             if (!aiTags) return p;
-            const mergedTags = [...new Set([...aiTags, ...quickTagsFromFilename({ id: p.id, uri: p.uri, filename: p.filename, mediaType: p.mediaType } as MediaLibrary.Asset)])];
+            const mergedTags = [
+              ...new Set([
+                ...aiTags,
+                ...quickTagsFromFilename({ id: p.id, uri: p.uri, filename: p.filename, mediaType: p.mediaType } as MediaLibrary.Asset),
+              ]),
+            ];
+            const geminiDesc = aiDescRef.current.get(p.id);
             return {
               ...p,
               tags: mergedTags,
-              description: generatePhotoDescription(mergedTags, p.mediaType),
+              description: geminiDesc ?? generatePhotoDescription(mergedTags, p.mediaType),
               isIndexed: true,
             };
           })
@@ -711,7 +891,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     } finally {
       aiAbortRef.current = null;
     }
-  }, [permission, aiProgress.isAnalyzing]);
+  }, [permission, aiProgress.isAnalyzing, geminiEnabled, geminiApiKey]);
 
   const toggleSelect = useCallback((id: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -855,6 +1035,10 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     cancelAIAnalysis,
     modelVersion,
     checkForModelUpdate: handleCheckForModelUpdate,
+    geminiEnabled,
+    setGeminiEnabled,
+    geminiApiKey,
+    setGeminiApiKey,
   };
 
   return (
