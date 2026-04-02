@@ -9,20 +9,20 @@
       "distribution": "internal",
       "ios": {
         "simulator": false,
-        "image": "macos-sequoia-15.2-xcode-16.2"
+        "image": "macos-sequoia-15.3-xcode-16.2"
       }
     },
     "preview": {
       "distribution": "internal",
       "ios": {
         "buildConfiguration": "Release",
-        "image": "macos-sequoia-15.2-xcode-16.2"
+        "image": "macos-sequoia-15.3-xcode-16.2"
       }
     },
     "production": {
       "ios": {
         "buildConfiguration": "Release",
-        "image": "macos-sequoia-15.2-xcode-16.2"
+        "image": "macos-sequoia-15.3-xcode-16.2"
       }
     }
   }
