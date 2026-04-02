@@ -57,7 +57,6 @@
   },
   "dependencies": {
     "@react-native-ml-kit/image-labeling": "^2.0.0",
-    "@react-native-ml-kit/text-recognition": "^2.0.0",
     "expo-image-manipulator": "^14.0.8",
     "expo-media-library": "^18.2.1"
   }
