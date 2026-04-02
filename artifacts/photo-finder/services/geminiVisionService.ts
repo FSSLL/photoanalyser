@@ -24,7 +24,7 @@ export function getEmbeddedApiKey(): string {
   return (Constants.expoConfig?.extra?.geminiApiKey as string | undefined) ?? "";
 }
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent";
 
 const ANALYSIS_PROMPT = `Analyze this photo in detail and return ONLY a valid JSON object (no markdown, no code blocks):
 {
