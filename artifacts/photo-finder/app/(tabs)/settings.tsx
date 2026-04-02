@@ -2,6 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import React from "react";
 import {
   ActivityIndicator,
+  Alert,
   Platform,
   Pressable,
   ScrollView,
@@ -68,6 +69,7 @@ export default function SettingsScreen() {
     photos,
     aiProgress,
     analyzeAllWithAI,
+    resetAIAnalysis,
     cancelAIAnalysis,
     modelVersion,
     checkForModelUpdate,
@@ -383,6 +385,29 @@ export default function SettingsScreen() {
             icon="clock"
             title="Last Analysis"
             subtitle={new Date(aiProgress.lastAnalyzed).toLocaleString()}
+          />
+        )}
+
+        {aiProgress.analyzed > 0 && !aiProgress.isAnalyzing && (
+          <SettingsRow
+            icon="trash-2"
+            title="Reset Analysis Data"
+            subtitle={`Clear all AI tags for ${aiProgress.analyzed.toLocaleString()} photos and start fresh`}
+            danger
+            onPress={() =>
+              Alert.alert(
+                "Reset Analysis?",
+                `This will clear the AI tags for all ${aiProgress.analyzed.toLocaleString()} analyzed photos. Your photos are not deleted — they will just need to be re-analyzed. This cannot be undone.`,
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Reset",
+                    style: "destructive",
+                    onPress: resetAIAnalysis,
+                  },
+                ]
+              )
+            }
           />
         )}
       </View>
