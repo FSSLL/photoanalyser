@@ -645,7 +645,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       setIndexStatus((prev) => ({
         ...prev,
         total: result.totalCount,
-        indexed: assets.length,
+        indexed: aiTagsRef.current.size,
       }));
     } catch (e) {
       console.warn("loadPhotos error", e);
@@ -694,7 +694,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       setIndexStatus((prev) => ({
         ...prev,
         total: result.totalCount,
-        indexed: prev.indexed + newAssets.length,
+        indexed: aiTagsRef.current.size,
       }));
     } catch (e) {
       console.warn("loadMorePhotos error", e);
@@ -727,18 +727,25 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     }
   }, [photos.length > 0]);
 
-  // Keep indexPhotos as a lightweight pass (just filename tags) for backward compat
+  // Refresh indexed status — marks photos that have AI tags and reports real counts
   const indexPhotos = useCallback(async () => {
     if (permission === "denied" || indexStatus.isIndexing) return;
     setIndexStatus((prev) => ({ ...prev, isIndexing: true }));
     try {
+      // Just need the total count — fetch 1 asset to get totalCount efficiently
       const result = await MediaLibrary.getAssetsAsync({
         mediaType: ["photo", "video"],
-        sortBy: [MediaLibrary.SortBy.creationTime],
-        first: 500,
+        first: 1,
       });
+      // Mark each loaded photo as indexed if it has AI tags
       setPhotos((prev) => prev.map((p) => ({ ...p, isIndexed: aiTagsRef.current.has(p.id) })));
-      setIndexStatus({ total: result.totalCount, indexed: result.assets.length, isIndexing: false, lastIndexed: Date.now() });
+      // indexed = actual number of photos with AI tags (real searchable count)
+      setIndexStatus({
+        total: result.totalCount,
+        indexed: aiTagsRef.current.size,
+        isIndexing: false,
+        lastIndexed: Date.now(),
+      });
     } catch (e) {
       console.warn("indexPhotos error", e);
       setIndexStatus((prev) => ({ ...prev, isIndexing: false }));
