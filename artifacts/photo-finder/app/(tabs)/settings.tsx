@@ -2,12 +2,15 @@ import { Feather } from "@expo/vector-icons";
 import React from "react";
 import {
   ActivityIndicator,
+  Alert,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -15,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { usePhotoLibrary } from "@/context/PhotoLibraryContext";
 import { isMlKitAvailable } from "@/services/offlineAIService";
+import { testGeminiApiKey } from "@/services/geminiVisionService";
 import { useColors } from "@/hooks/useColors";
 
 function SettingsRow({
@@ -70,11 +74,54 @@ export default function SettingsScreen() {
     cancelAIAnalysis,
     modelVersion,
     checkForModelUpdate,
+    geminiEnabled,
+    setGeminiEnabled,
+    geminiApiKey,
+    setGeminiApiKey,
   } = usePhotoLibrary();
 
   const [checkingUpdate, setCheckingUpdate] = React.useState(false);
   const [lastUpdateMsg, setLastUpdateMsg] = React.useState<string | null>(null);
+  const [geminiKeyInput, setGeminiKeyInput] = React.useState(geminiApiKey);
+  const [testingKey, setTestingKey] = React.useState(false);
+  const [keyTestResult, setKeyTestResult] = React.useState<{ valid: boolean; msg: string } | null>(null);
   const mlkitAvailable = React.useMemo(() => isMlKitAvailable(), []);
+
+  React.useEffect(() => {
+    setGeminiKeyInput(geminiApiKey);
+  }, [geminiApiKey]);
+
+  const handleSaveGeminiKey = async () => {
+    await setGeminiApiKey(geminiKeyInput);
+    setKeyTestResult(null);
+  };
+
+  const handleTestKey = async () => {
+    setTestingKey(true);
+    setKeyTestResult(null);
+    const result = await testGeminiApiKey(geminiKeyInput);
+    setKeyTestResult({ valid: result.valid, msg: result.valid ? "API key is valid ✓" : result.error ?? "Invalid key" });
+    if (result.valid) await setGeminiApiKey(geminiKeyInput);
+    setTestingKey(false);
+  };
+
+  const handleToggleGemini = async (v: boolean) => {
+    if (v && !geminiApiKey.trim() && !geminiKeyInput.trim()) {
+      Alert.alert(
+        "API Key Required",
+        "Enter your free Gemini API key first. Get one at aistudio.google.com/app/apikey",
+        [
+          { text: "Get Free Key", onPress: () => Linking.openURL("https://aistudio.google.com/app/apikey") },
+          { text: "Cancel", style: "cancel" },
+        ]
+      );
+      return;
+    }
+    if (v && geminiKeyInput.trim() && geminiKeyInput !== geminiApiKey) {
+      await setGeminiApiKey(geminiKeyInput);
+    }
+    await setGeminiEnabled(v);
+  };
 
   const handleCheckUpdate = async () => {
     setCheckingUpdate(true);
@@ -379,6 +426,137 @@ export default function SettingsScreen() {
         )}
       </View>
 
+      {/* Deep AI Analysis */}
+      <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>DEEP AI ANALYSIS (GEMINI VISION)</Text>
+      <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        {/* Hero */}
+        <View style={[styles.aiHero, { borderBottomColor: colors.border }]}>
+          <View style={[styles.aiIconWrap, { backgroundColor: geminiEnabled ? "#7C3AED18" : colors.muted }]}>
+            <Feather name="zap" size={22} color={geminiEnabled ? "#7C3AED" : colors.mutedForeground} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.aiHeroTitle, { color: colors.foreground }]}>Gemini Vision AI</Text>
+            <Text style={[styles.aiHeroSub, { color: colors.mutedForeground }]}>
+              {geminiEnabled
+                ? "ON — every photo deeply analyzed: people, animals, food, events, emotions & more"
+                : "OFF — enable for powerful AI that understands what's in every photo"}
+            </Text>
+          </View>
+          <Switch
+            value={geminiEnabled}
+            onValueChange={handleToggleGemini}
+            trackColor={{ false: colors.muted, true: "#7C3AED88" }}
+            thumbColor={geminiEnabled ? "#7C3AED" : colors.mutedForeground}
+          />
+        </View>
+
+        {/* Info banner */}
+        <View style={[styles.warningBox, { backgroundColor: "#7C3AED12", borderColor: "#7C3AED33" }]}>
+          <Feather name="info" size={14} color="#7C3AED" />
+          <Text style={[styles.warningText, { color: "#7C3AED" }]}>
+            Gemini Vision reads each photo and creates custom tags like "girl smiling at birthday party" so any search finds the right photos. Get a free API key at aistudio.google.com (1,500 photos/day free).
+          </Text>
+        </View>
+
+        {/* API Key input */}
+        <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4 }}>
+          <Text style={[styles.rowTitle, { color: colors.foreground, marginBottom: 8 }]}>
+            Gemini API Key
+          </Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <TextInput
+              style={[
+                styles.apiKeyInput,
+                {
+                  flex: 1,
+                  backgroundColor: colors.background,
+                  borderColor: keyTestResult?.valid
+                    ? colors.success
+                    : keyTestResult
+                    ? colors.destructive
+                    : colors.border,
+                  color: colors.foreground,
+                },
+              ]}
+              value={geminiKeyInput}
+              onChangeText={(t) => { setGeminiKeyInput(t); setKeyTestResult(null); }}
+              placeholder="AIza..."
+              placeholderTextColor={colors.mutedForeground}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry={false}
+              returnKeyType="done"
+              onSubmitEditing={handleSaveGeminiKey}
+            />
+            <TouchableOpacity
+              onPress={handleTestKey}
+              disabled={testingKey || !geminiKeyInput.trim()}
+              style={[
+                styles.updateBtn,
+                {
+                  borderColor: "#7C3AED55",
+                  backgroundColor: "#7C3AED15",
+                  opacity: testingKey || !geminiKeyInput.trim() ? 0.5 : 1,
+                  justifyContent: "center",
+                },
+              ]}
+            >
+              {testingKey ? (
+                <ActivityIndicator size="small" color="#7C3AED" />
+              ) : (
+                <Text style={[styles.updateBtnText, { color: "#7C3AED" }]}>Test</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {keyTestResult && (
+            <View
+              style={[
+                styles.warningBox,
+                {
+                  marginTop: 8,
+                  marginHorizontal: 0,
+                  backgroundColor: keyTestResult.valid ? colors.success + "15" : colors.destructive + "15",
+                  borderColor: keyTestResult.valid ? colors.success + "44" : colors.destructive + "44",
+                },
+              ]}
+            >
+              <Feather
+                name={keyTestResult.valid ? "check-circle" : "alert-circle"}
+                size={14}
+                color={keyTestResult.valid ? colors.success : colors.destructive}
+              />
+              <Text
+                style={[
+                  styles.warningText,
+                  { color: keyTestResult.valid ? colors.success : colors.destructive },
+                ]}
+              >
+                {keyTestResult.msg}
+              </Text>
+            </View>
+          )}
+
+          <TouchableOpacity
+            onPress={() => Linking.openURL("https://aistudio.google.com/app/apikey")}
+            style={{ marginTop: 6 }}
+          >
+            <Text style={{ color: "#7C3AED", fontSize: 12, fontFamily: "Inter_400Regular" }}>
+              → Get a free API key at aistudio.google.com
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {geminiEnabled && (
+          <SettingsRow
+            icon="refresh-cw"
+            title="Re-analyze with Deep AI"
+            subtitle="Run Gemini Vision on all photos for the richest tags and descriptions"
+            onPress={permission === "denied" ? undefined : analyzeAllWithAI}
+          />
+        )}
+      </View>
+
       {/* Behavior */}
       <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>BEHAVIOR</Text>
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -562,5 +740,13 @@ const styles = StyleSheet.create({
   updateBtnText: {
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
+  },
+  apiKeyInput: {
+    height: 42,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
   },
 });
