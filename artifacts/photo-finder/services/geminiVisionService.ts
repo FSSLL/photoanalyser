@@ -11,9 +11,18 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImageManipulator from "expo-image-manipulator";
+import Constants from "expo-constants";
 
 const STORAGE_KEY_API_KEY = "photo_finder_gemini_api_key";
 const STORAGE_KEY_ENABLED = "photo_finder_gemini_enabled";
+
+/**
+ * Returns the Gemini API key embedded at build time via EAS secrets.
+ * Falls back to any key the user previously saved in AsyncStorage.
+ */
+export function getEmbeddedApiKey(): string {
+  return (Constants.expoConfig?.extra?.geminiApiKey as string | undefined) ?? "";
+}
 const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent";
 
