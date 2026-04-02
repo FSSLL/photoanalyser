@@ -93,6 +93,7 @@ type PhotoLibraryContextType = {
   setReviewBeforeDelete: (v: boolean) => void;
   aiProgress: AIAnalysisProgress;
   analyzeAllWithAI: () => Promise<void>;
+  resetAIAnalysis: () => Promise<void>;
   modelVersion: string;
   checkForModelUpdate: () => Promise<{ updated: boolean; version: string }>;
   cancelAIAnalysis: () => void;
@@ -760,6 +761,44 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     setAIProgress((prev) => ({ ...prev, isAnalyzing: false }));
   }, []);
 
+  const resetAIAnalysis = useCallback(async () => {
+    // Stop any running analysis first
+    if (aiAbortRef.current) {
+      aiAbortRef.current.abort();
+      aiAbortRef.current = null;
+    }
+    // Wipe all stored AI tags and descriptions
+    aiTagsRef.current.clear();
+    aiDescRef.current.clear();
+    await AsyncStorage.removeItem(STORAGE_KEY_AI_TAGS).catch(() => {});
+    hasAutoAnalyzedRef.current = false;
+    // Reset photos back to filename-only tags (no AI tags)
+    setPhotos((prev) =>
+      prev.map((p) => {
+        const baseTags = quickTagsFromFilename({
+          id: p.id,
+          uri: p.uri,
+          filename: p.filename,
+          mediaType: p.mediaType,
+        } as MediaLibrary.Asset);
+        return {
+          ...p,
+          tags: baseTags,
+          description: generatePhotoDescription(baseTags, p.mediaType),
+          isIndexed: false,
+        };
+      })
+    );
+    setAIProgress((prev) => ({
+      ...prev,
+      analyzed: 0,
+      isAnalyzing: false,
+      lastAnalyzed: null,
+      error: null,
+    }));
+    setIndexStatus((prev) => ({ ...prev, indexed: 0 }));
+  }, []);
+
   const analyzeAllWithAI = useCallback(async () => {
     if (permission === "denied" || permission === "undetermined") {
       Alert.alert("Permission needed", "Grant photo library access first.");
@@ -1047,6 +1086,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     setReviewBeforeDelete,
     aiProgress,
     analyzeAllWithAI,
+    resetAIAnalysis,
     cancelAIAnalysis,
     modelVersion,
     checkForModelUpdate: handleCheckForModelUpdate,
