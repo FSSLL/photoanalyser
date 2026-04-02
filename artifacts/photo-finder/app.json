@@ -17,7 +17,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.fssll.photofinder",
       "buildNumber": "11",
-      "deploymentTarget": "16.0",
+      "deploymentTarget": "16.4",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Photo Finder AI needs access to your photo library to search, browse, and help you manage your photos. All processing happens on your device — your photos are never uploaded.",
         "NSPhotoLibraryAddUsageDescription": "Photo Finder AI needs permission to save photos to your library.",
