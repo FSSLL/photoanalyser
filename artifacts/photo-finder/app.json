@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.photofinder.ai",
+      "bundleIdentifier": "com.fssll.photofinder",
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Photo Finder AI needs access to your photo library to search, browse, and help you manage your photos. All processing happens on your device — your photos are never uploaded.",
         "NSPhotoLibraryAddUsageDescription": "Photo Finder AI needs permission to save photos to your library.",
