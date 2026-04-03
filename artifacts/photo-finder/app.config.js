@@ -24,7 +24,6 @@ module.exports = {
         NSPhotoLibraryAddUsageDescription:
           "Photo Finder AI needs permission to save photos to your library.",
         ITSAppUsesNonExemptEncryption: false,
-        UIBackgroundModes: ["background-fetch", "remote-notification"],
       },
     },
     android: {
