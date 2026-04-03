@@ -960,8 +960,22 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       // One rate-limiter instance shared across all Gemini workers.
       const geminiRateLimit = makeRateLimiter(GEMINI_RPM);
 
-      // Shared counter for periodic AsyncStorage flushes (every 10 completions).
-      let flushCounter = 0;
+      // Throttle React state updates — at most once every 1.5 s to avoid
+      // flooding the render queue when 10 workers all complete near-simultaneously.
+      let lastProgressUpdate = 0;
+
+      // Time-based AsyncStorage flush — at most every 8 s.  The existingMap JSON
+      // grows proportionally with analyzed photos so writing it on every N-th photo
+      // becomes progressively slower; a time gate prevents serialization from
+      // dominating CPU time late in a long run.
+      let lastFlush = 0;
+      async function maybeFlush(force = false) {
+        const now = Date.now();
+        if (force || now - lastFlush > 8_000) {
+          lastFlush = now;
+          await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existingMap)).catch(() => {});
+        }
+      }
 
       const workerConcurrency = useGemini ? GEMINI_WORKERS : OFFLINE_WORKERS;
 
@@ -1016,21 +1030,22 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
             }
           }
 
-          // Update progress UI after each photo
-          analyzed = aiTagsRef.current.size;
-          setAIProgress((prev) => ({ ...prev, analyzed, total }));
-
-          // Persist to AsyncStorage every 10 photos so progress survives restarts
-          flushCounter += 1;
-          if (flushCounter % 10 === 0) {
-            await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existingMap)).catch(() => {});
+          // Throttled progress UI update (max once per 1.5 s)
+          const now = Date.now();
+          if (now - lastProgressUpdate > 1_500) {
+            lastProgressUpdate = now;
+            analyzed = aiTagsRef.current.size;
+            setAIProgress((prev) => ({ ...prev, analyzed, total }));
           }
+
+          // Time-based AsyncStorage flush (max once per 8 s)
+          await maybeFlush();
         },
         abort.signal
       );
 
-      // Final flush to make sure the last <10 completions are persisted
-      await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existingMap)).catch(() => {});
+      // Final flush to make sure the last batch is persisted
+      await maybeFlush(true);
 
       if (!abort.signal.aborted) {
         // Update in-memory photos with final tags + rich descriptions
