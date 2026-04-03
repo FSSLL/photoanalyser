@@ -16,7 +16,7 @@ module.exports = {
     ios: {
       supportsTablet: false,
       bundleIdentifier: "com.fssll.photofinder",
-      buildNumber: "20",
+      buildNumber: "21",
       deploymentTarget: "17.0",
       infoPlist: {
         NSPhotoLibraryUsageDescription:
