@@ -92,6 +92,21 @@ export interface GeminiAnalysisResult {
   success: boolean;
 }
 
+const GEMINI_TIMEOUT_MS = 28_000; // 28-second per-request timeout
+
+/** Creates a merged AbortSignal that fires on whichever happens first: caller abort or timeout. */
+function makeTimeoutSignal(parentSignal: AbortSignal | undefined, ms: number): [AbortSignal, () => void] {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new Error("Gemini request timed out")), ms);
+  const onAbort = () => ctrl.abort();
+  parentSignal?.addEventListener("abort", onAbort);
+  const cleanup = () => {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", onAbort);
+  };
+  return [ctrl.signal, cleanup];
+}
+
 export async function analyzePhotoWithGemini(
   assetUri: string,
   apiKey: string,
@@ -101,6 +116,34 @@ export async function analyzePhotoWithGemini(
     return { description: "", tags: [], richText: "", success: false };
   }
 
+  // Retry once on 429 (rate-limit burst) with a 6-second back-off.
+  const MAX_RETRIES = 2;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (signal?.aborted) return { description: "", tags: [], richText: "", success: false };
+    const result = await _analyzeOnce(assetUri, apiKey, signal);
+    if (result !== "RATE_LIMITED") return result;
+    // 429 — wait 6 s then retry (once)
+    if (attempt < MAX_RETRIES - 1) {
+      await new Promise<void>((res) => {
+        const t = setTimeout(res, 6_000);
+        signal?.addEventListener("abort", () => { clearTimeout(t); res(); }, { once: true });
+      });
+    }
+  }
+  return { description: "", tags: [], richText: "", success: false };
+}
+
+async function _analyzeOnce(
+  assetUri: string,
+  apiKey: string,
+  signal?: AbortSignal
+): Promise<GeminiAnalysisResult | "RATE_LIMITED"> {
+  if (!apiKey || signal?.aborted) {
+    return { description: "", tags: [], richText: "", success: false };
+  }
+
+  const [reqSignal, cleanupSignal] = makeTimeoutSignal(signal, GEMINI_TIMEOUT_MS);
+
   try {
     const resized = await ImageManipulator.manipulateAsync(
       assetUri,
@@ -108,12 +151,12 @@ export async function analyzePhotoWithGemini(
       { format: ImageManipulator.SaveFormat.JPEG, compress: 0.78 }
     );
 
-    if (signal?.aborted) return { description: "", tags: [], richText: "", success: false };
+    if (reqSignal.aborted) return { description: "", tags: [], richText: "", success: false };
 
     const base64 = await uriToBase64(resized.uri);
     if (!base64) return { description: "", tags: [], richText: "", success: false };
 
-    if (signal?.aborted) return { description: "", tags: [], richText: "", success: false };
+    if (reqSignal.aborted) return { description: "", tags: [], richText: "", success: false };
 
     const body = JSON.stringify({
       contents: [
@@ -135,8 +178,15 @@ export async function analyzePhotoWithGemini(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body,
-      signal,
+      signal: reqSignal,
     });
+
+    cleanupSignal();
+
+    if (response.status === 429) {
+      console.warn("Gemini 429 — will retry after back-off");
+      return "RATE_LIMITED";
+    }
 
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
@@ -190,10 +240,11 @@ export async function analyzePhotoWithGemini(
       success: true,
     };
   } catch (err) {
+    cleanupSignal();
     if ((err as Error)?.name === "AbortError") {
       return { description: "", tags: [], richText: "", success: false };
     }
-    console.warn("Gemini analysis failed:", err);
+    console.warn("Gemini analysis failed:", (err as Error)?.message ?? err);
     return { description: "", tags: [], richText: "", success: false };
   }
 }
