@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Haptics from "expo-haptics";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import * as MediaLibrary from "expo-media-library";
 import React, {
   createContext,
@@ -111,7 +112,49 @@ const STORAGE_KEY_SEARCHES = "photo_finder_recent_searches";
 const STORAGE_KEY_SETTINGS = "photo_finder_settings";
 const STORAGE_KEY_AI_TAGS = "photo_finder_ai_tags";
 const STORAGE_KEY_PHOTO_META = "photo_finder_meta_v1";
-const AI_BATCH_SIZE = 3; // concurrent photos to analyze at once
+const OFFLINE_WORKERS = 10; // concurrent on-device analysis workers
+const GEMINI_WORKERS = 5;   // concurrent Gemini workers
+const GEMINI_RPM = 12;      // max Gemini requests per minute (stay under free-tier 15 RPM)
+
+// ── Sliding-window rate limiter ────────────────────────────────────────────────
+// Shared across all Gemini workers so the combined throughput never exceeds GEMINI_RPM.
+function makeRateLimiter(requestsPerMin: number) {
+  const ts: number[] = [];
+  return async function waitForSlot() {
+    const now = Date.now();
+    while (ts.length > 0 && ts[0] < now - 60_000) ts.shift();
+    if (ts.length >= requestsPerMin) {
+      const delay = ts[0] + 60_000 - Date.now() + 150;
+      await new Promise((r) => setTimeout(r, Math.max(0, delay)));
+      // After waiting, prune again
+      const now2 = Date.now();
+      while (ts.length > 0 && ts[0] < now2 - 60_000) ts.shift();
+    }
+    ts.push(Date.now());
+  };
+}
+
+// ── Worker pool ────────────────────────────────────────────────────────────────
+// Drains `items` using up to `concurrency` simultaneous async workers.
+async function runPool<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+  signal?: AbortSignal
+): Promise<void> {
+  const queue = [...items];
+  const workers = Array(Math.min(concurrency, items.length))
+    .fill(null)
+    .map(async () => {
+      while (queue.length > 0) {
+        if (signal?.aborted) return;
+        const item = queue.shift();
+        if (item === undefined) return;
+        await worker(item);
+      }
+    });
+  await Promise.allSettled(workers);
+}
 
 // iPhone screen widths (logical points) and physical pixel widths for screenshot detection
 const IOS_SCREEN_WIDTHS = new Set([
@@ -911,70 +954,83 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         return;
       }
 
-      // Process in batches — Gemini runs sequentially per photo (1 at a time to respect rate limits)
-      const batchSize = useGemini ? 1 : AI_BATCH_SIZE;
+      // Keep the screen on so iOS doesn't suspend JS during long analysis runs.
+      await activateKeepAwakeAsync("photo-analysis");
 
-      for (let i = 0; i < toAnalyze.length; i += batchSize) {
-        if (abort.signal.aborted) break;
+      // One rate-limiter instance shared across all Gemini workers.
+      const geminiRateLimit = makeRateLimiter(GEMINI_RPM);
 
-        const batch = toAnalyze.slice(i, i + batchSize);
-        await Promise.allSettled(
-          batch.map(async (asset) => {
-            if (abort.signal.aborted) return;
-            try {
-              // Step 1: On-device analysis (EXIF + filename + ML Kit)
-              const result = await analyzePhotoOffline(asset, abort.signal);
-              let finalTags = result.tags.map((t) => t.toLowerCase().trim());
-              let finalDescription: string | undefined;
+      // Shared counter for periodic AsyncStorage flushes (every 10 completions).
+      let flushCounter = 0;
 
-              // Step 2: Gemini Vision — deep AI understanding of photo content
-              if (useGemini && asset.mediaType !== "video" && !abort.signal.aborted) {
-                try {
+      const workerConcurrency = useGemini ? GEMINI_WORKERS : OFFLINE_WORKERS;
+
+      await runPool(
+        toAnalyze,
+        workerConcurrency,
+        async (asset) => {
+          if (abort.signal.aborted) return;
+          try {
+            // Step 1: On-device analysis (EXIF + filename + ML Kit)
+            const result = await analyzePhotoOffline(asset, abort.signal);
+            let finalTags = result.tags.map((t) => t.toLowerCase().trim());
+            let finalDescription: string | undefined;
+
+            // Step 2: Gemini Vision — deep semantic understanding of photo content.
+            // Each Gemini worker waits for a rate-limit slot before firing the request.
+            if (useGemini && asset.mediaType !== "video" && !abort.signal.aborted) {
+              try {
+                await geminiRateLimit();
+                if (!abort.signal.aborted) {
                   const geminiResult = await analyzePhotoWithGemini(
                     asset.uri,
                     geminiApiKey.trim(),
                     abort.signal
                   );
                   if (geminiResult.success) {
-                    // Merge Gemini tags with offline tags
                     finalTags = [...new Set([...finalTags, ...geminiResult.tags])];
                     finalDescription = geminiResult.richText || geminiResult.description;
                     if (finalDescription) {
                       aiDescRef.current.set(asset.id, finalDescription);
                     }
                   }
-                } catch (geminiErr) {
-                  if ((geminiErr as Error)?.name !== "AbortError") {
-                    console.warn(`Gemini failed for ${asset.filename}:`, geminiErr);
-                  }
+                }
+              } catch (geminiErr) {
+                if ((geminiErr as Error)?.name !== "AbortError") {
+                  console.warn(`Gemini failed for ${asset.filename}:`, geminiErr);
                 }
               }
-
-              if (finalTags.length > 0) {
-                aiTagsRef.current.set(asset.id, finalTags);
-                existingMap[asset.id] = {
-                  tags: finalTags,
-                  description: finalDescription,
-                  ts: Date.now(),
-                };
-              }
-            } catch (err) {
-              if ((err as Error)?.name !== "AbortError") {
-                console.warn(`Analysis failed for ${asset.filename}:`, err);
-              }
             }
-          })
-        );
 
-        analyzed = aiTagsRef.current.size;
-        setAIProgress((prev) => ({ ...prev, analyzed, total }));
+            if (finalTags.length > 0) {
+              aiTagsRef.current.set(asset.id, finalTags);
+              existingMap[asset.id] = {
+                tags: finalTags,
+                description: finalDescription,
+                ts: Date.now(),
+              };
+            }
+          } catch (err) {
+            if ((err as Error)?.name !== "AbortError") {
+              console.warn(`Analysis failed for ${asset.filename}:`, err);
+            }
+          }
 
-        // Persist every batch so progress survives app restarts
-        await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existingMap)).catch(() => {});
+          // Update progress UI after each photo
+          analyzed = aiTagsRef.current.size;
+          setAIProgress((prev) => ({ ...prev, analyzed, total }));
 
-        // Rate-limit delay: shorter for offline-only, slightly longer for Gemini
-        await new Promise((r) => setTimeout(r, useGemini ? 800 : 300));
-      }
+          // Persist to AsyncStorage every 10 photos so progress survives restarts
+          flushCounter += 1;
+          if (flushCounter % 10 === 0) {
+            await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existingMap)).catch(() => {});
+          }
+        },
+        abort.signal
+      );
+
+      // Final flush to make sure the last <10 completions are persisted
+      await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existingMap)).catch(() => {});
 
       if (!abort.signal.aborted) {
         // Update in-memory photos with final tags + rich descriptions
@@ -1004,6 +1060,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       setAIProgress((prev) => ({ ...prev, isAnalyzing: false, error: msg }));
     } finally {
       aiAbortRef.current = null;
+      deactivateKeepAwake("photo-analysis");
     }
   }, [permission, aiProgress.isAnalyzing, geminiEnabled, geminiApiKey]);
 
