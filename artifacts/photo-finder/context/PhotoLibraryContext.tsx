@@ -1,6 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as BackgroundFetch from "expo-background-fetch";
 import * as Haptics from "expo-haptics";
 import * as MediaLibrary from "expo-media-library";
+import * as TaskManager from "expo-task-manager";
 import React, {
   createContext,
   useCallback,
@@ -9,7 +11,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Alert, Linking, Platform } from "react-native";
+import { Alert, AppState, AppStateStatus, Linking, Platform } from "react-native";
 import {
   analyzePhotoOffline,
   checkForModelUpdate,
@@ -110,7 +112,47 @@ const RECENT_SIZE = 30;
 const STORAGE_KEY_SEARCHES = "photo_finder_recent_searches";
 const STORAGE_KEY_SETTINGS = "photo_finder_settings";
 const STORAGE_KEY_AI_TAGS = "photo_finder_ai_tags";
+const STORAGE_KEY_PHOTO_META = "photo_finder_meta_v1";
 const AI_BATCH_SIZE = 3; // concurrent photos to analyze at once
+const BACKGROUND_TASK_NAME = "photo-finder-background-analysis";
+
+// ── Background task (defined at module level — required by expo-task-manager) ─
+// Runs offline-only analysis for a small batch when iOS grants background time.
+// Gemini is skipped here (network use in background can cause issues + rate limits).
+if (!TaskManager.isTaskDefined(BACKGROUND_TASK_NAME)) {
+  TaskManager.defineTask(BACKGROUND_TASK_NAME, async () => {
+    try {
+      const aiTagsRaw = await AsyncStorage.getItem(STORAGE_KEY_AI_TAGS).catch(() => "{}");
+      const existing: Record<string, { tags: string[]; description?: string; ts: number }> = JSON.parse(aiTagsRaw || "{}");
+      const page = await MediaLibrary.getAssetsAsync({
+        mediaType: ["photo", "video"],
+        sortBy: [[MediaLibrary.SortBy.creationTime, false]],
+        first: 60,
+      });
+      const toAnalyze = page.assets.filter((a) => !existing[a.id]);
+      if (toAnalyze.length === 0) return BackgroundFetch.BackgroundFetchResult.NoData;
+      let didWork = false;
+      for (const asset of toAnalyze.slice(0, 20)) {
+        try {
+          const abort = new AbortController();
+          const result = await analyzePhotoOffline(asset, abort.signal);
+          if (result.tags.length > 0) {
+            existing[asset.id] = { tags: result.tags, ts: Date.now() };
+            didWork = true;
+          }
+        } catch {}
+      }
+      if (didWork) {
+        await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existing)).catch(() => {});
+      }
+      return didWork
+        ? BackgroundFetch.BackgroundFetchResult.NewData
+        : BackgroundFetch.BackgroundFetchResult.NoData;
+    } catch {
+      return BackgroundFetch.BackgroundFetchResult.Failed;
+    }
+  });
+}
 
 // iPhone screen widths (logical points) and physical pixel widths for screenshot detection
 const IOS_SCREEN_WIDTHS = new Set([
@@ -435,7 +477,12 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
   const indexedPhotosRef = useRef<Map<string, string[]>>(new Map());
   const aiTagsRef = useRef<Map<string, string[]>>(new Map());
   const aiDescRef = useRef<Map<string, string>>(new Map());
+  // Minimal metadata cache: id → {fn, mt, ct, w, h} — used by search to reconstruct
+  // PhotoAsset objects for ALL analyzed photos without keeping them all in JS state.
+  const photoMetaRef = useRef<Map<string, { fn: string; mt: string; ct: number; w: number; h: number }>>(new Map());
   const aiAbortRef = useRef<AbortController | null>(null);
+  const analyzeAllWithAIRef = useRef<(() => Promise<void>) | null>(null);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadPhotosRef = useRef<() => Promise<void>>(async () => {});
 
@@ -476,8 +523,45 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
             lastAnalyzed: Math.max(...Object.values(parsed).map((v) => v.ts), 0) || null,
           }));
         }
+        // Load photo metadata cache so search can reconstruct full PhotoAsset objects
+        const metaRaw = await AsyncStorage.getItem(STORAGE_KEY_PHOTO_META);
+        if (metaRaw) {
+          const parsedMeta: Record<string, { fn: string; mt: string; ct: number; w: number; h: number }> = JSON.parse(metaRaw);
+          for (const [id, meta] of Object.entries(parsedMeta)) {
+            photoMetaRef.current.set(id, meta);
+          }
+        }
       } catch (_) {}
     })();
+  }, []);
+
+  // Register background fetch so iOS wakes the app to continue analysis
+  useEffect(() => {
+    BackgroundFetch.registerTaskAsync(BACKGROUND_TASK_NAME, {
+      minimumInterval: 15 * 60, // at most every 15 minutes (iOS decides actual frequency)
+      stopOnTerminate: false,
+      startOnBoot: false,
+    }).catch(() => {}); // fails gracefully in Expo Go / simulator
+
+    // Track app state to resume analysis when returning to foreground
+    const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
+      const prev = appStateRef.current;
+      appStateRef.current = nextState;
+      // Came back to foreground and analysis was running — resume if needed
+      if (prev.match(/inactive|background/) && nextState === "active") {
+        // Came back to foreground — if analysis was paused, auto-resume after a moment
+        if (!aiAbortRef.current) {
+          setTimeout(() => {
+            analyzeAllWithAIRef.current?.();
+          }, 2000);
+        }
+      }
+    });
+
+    return () => {
+      sub.remove();
+      BackgroundFetch.unregisterTaskAsync(BACKGROUND_TASK_NAME).catch(() => {});
+    };
   }, []);
 
   const setCloudEnabled = useCallback(async (v: boolean) => {
@@ -767,10 +851,14 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       aiAbortRef.current.abort();
       aiAbortRef.current = null;
     }
-    // Wipe all stored AI tags and descriptions
+    // Wipe all stored AI tags, descriptions, and metadata
     aiTagsRef.current.clear();
     aiDescRef.current.clear();
-    await AsyncStorage.removeItem(STORAGE_KEY_AI_TAGS).catch(() => {});
+    photoMetaRef.current.clear();
+    await Promise.all([
+      AsyncStorage.removeItem(STORAGE_KEY_AI_TAGS).catch(() => {}),
+      AsyncStorage.removeItem(STORAGE_KEY_PHOTO_META).catch(() => {}),
+    ]);
     hasAutoAnalyzedRef.current = false;
     // Reset photos back to filename-only tags (no AI tags)
     setPhotos((prev) =>
@@ -831,13 +919,34 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       }
 
       const total = allAssets.length;
-      let analyzed = aiTagsRef.current.size;
 
-      setAIProgress({ total, analyzed, isAnalyzing: true, lastAnalyzed: null, error: null });
-
-      // Load existing AI tags from storage (in case the ref is stale)
+      // Load existing AI tags from storage — MUST happen before counting so crash
+      // recovery shows the correct "analyzed" count even on a fresh app start.
       const existingRaw = await AsyncStorage.getItem(STORAGE_KEY_AI_TAGS).catch(() => "{}");
       const existingMap: Record<string, { tags: string[]; description?: string; ts: number }> = JSON.parse(existingRaw || "{}");
+
+      // Fix race condition: if aiTagsRef is empty but AsyncStorage has data (app
+      // crashed / was killed before the startup useEffect finished loading), repopulate it.
+      if (aiTagsRef.current.size === 0 && Object.keys(existingMap).length > 0) {
+        for (const [id, { tags, description }] of Object.entries(existingMap)) {
+          aiTagsRef.current.set(id, tags);
+          if (description) aiDescRef.current.set(id, description);
+        }
+      }
+
+      // Populate photo metadata cache from the full asset list so search can find
+      // any analyzed photo — not just ones loaded into the grid.
+      const metaToSave: Record<string, { fn: string; mt: string; ct: number; w: number; h: number }> = {};
+      for (const asset of allAssets) {
+        const entry = { fn: asset.filename, mt: asset.mediaType, ct: asset.creationTime, w: asset.width, h: asset.height };
+        photoMetaRef.current.set(asset.id, entry);
+        metaToSave[asset.id] = entry;
+      }
+      // Persist metadata in background (don't block analysis)
+      AsyncStorage.setItem(STORAGE_KEY_PHOTO_META, JSON.stringify(metaToSave)).catch(() => {});
+
+      let analyzed = aiTagsRef.current.size;
+      setAIProgress({ total, analyzed, isAnalyzing: true, lastAnalyzed: null, error: null });
 
       // Photos to analyze: new ones, or ones that haven't had Gemini run (if Gemini just enabled)
       const toAnalyze = allAssets.filter((a) => {
@@ -947,6 +1056,100 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     }
   }, [permission, aiProgress.isAnalyzing, geminiEnabled, geminiApiKey]);
 
+  // Keep a stable ref so the AppState listener can call analyzeAllWithAI without
+  // capturing a stale closure.
+  useEffect(() => {
+    analyzeAllWithAIRef.current = analyzeAllWithAI;
+  }, [analyzeAllWithAI]);
+
+  // ── Search across ALL analyzed photos (not just the loaded grid page) ────────
+  // Uses photoMetaRef + aiTagsRef so 30k analyzed photos are all searchable even
+  // if they've never appeared in the scroll view.
+  const searchAllPhotos = useCallback(
+    (query: string): PhotoAsset[] => {
+      if (!query.trim()) return [];
+      const rawWords = query.toLowerCase().trim().split(/\s+/);
+      const searchTerms = syncExpandQuery(rawWords);
+
+      const scored: Array<{ photo: PhotoAsset; score: number }> = [];
+      const addedIds = new Set<string>();
+
+      // ── Tier 1: analyzed photos (aiTagsRef + photoMetaRef) ───────────────────
+      for (const [id, tags] of aiTagsRef.current.entries()) {
+        const meta = photoMetaRef.current.get(id);
+        if (!meta) continue;
+
+        const filename = meta.fn.toLowerCase();
+        const description = (aiDescRef.current.get(id) || "").toLowerCase();
+        const fileWords = filename.split(/[\s_\-./]+/).filter(Boolean);
+        const descWords = description.split(/\s+/).filter(Boolean);
+        let score = 0;
+
+        for (const term of searchTerms) {
+          if (tags.includes(term)) { score += 15; continue; }
+          if (term.length >= 3 && tags.some((t) => t.startsWith(term))) { score += 8; continue; }
+          if (term.length >= 4 && tags.some((t) => t.includes(term))) score += 4;
+          if (descWords.includes(term)) { score += 10; continue; }
+          if (term.length >= 4 && descWords.some((w) => w.startsWith(term))) score += 6;
+          if (term.length >= 4 && description.includes(term)) score += 3;
+          if (fileWords.includes(term)) score += 12;
+          else if (term.length >= 3 && filename.includes(term)) score += 5;
+        }
+
+        if (score > 0) {
+          addedIds.add(id);
+          // iOS URIs are always ph://<assetId>
+          const uri = Platform.OS === "ios" ? `ph://${id}` : meta.fn;
+          scored.push({
+            score,
+            photo: {
+              id,
+              uri,
+              filename: meta.fn,
+              mediaType: meta.mt as MediaLibrary.MediaTypeValue,
+              width: meta.w,
+              height: meta.h,
+              creationTime: meta.ct,
+              modificationTime: meta.ct,
+              tags,
+              description: aiDescRef.current.get(id) || "",
+              isIndexed: true,
+            },
+          });
+        }
+      }
+
+      // ── Tier 2: loaded-but-not-yet-analyzed photos (fallback filename search) ─
+      for (const photo of photos) {
+        if (addedIds.has(photo.id)) continue;
+        const tags = photo.tags || [];
+        const filename = (photo.filename || "").toLowerCase();
+        const description = (photo.description || "").toLowerCase();
+        const fileWords = filename.split(/[\s_\-./]+/).filter(Boolean);
+        const descWords = description.split(/\s+/).filter(Boolean);
+        let score = 0;
+
+        for (const term of searchTerms) {
+          if (tags.includes(term)) { score += 15; continue; }
+          if (term.length >= 3 && tags.some((t) => t.startsWith(term))) { score += 8; continue; }
+          if (term.length >= 4 && tags.some((t) => t.includes(term))) score += 4;
+          if (descWords.includes(term)) { score += 10; continue; }
+          if (term.length >= 4 && descWords.some((w) => w.startsWith(term))) score += 6;
+          if (fileWords.includes(term)) score += 12;
+          else if (term.length >= 3 && filename.includes(term)) score += 5;
+        }
+
+        if (score > 0) {
+          addedIds.add(photo.id);
+          scored.push({ score, photo });
+        }
+      }
+
+      return scored.sort((a, b) => b.score - a.score).map((x) => x.photo);
+    },
+    [photos]
+  );
+
   const toggleSelect = useCallback((id: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedIds((prev) => {
@@ -1017,7 +1220,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       }
       setIsSearching(true);
       searchDebounce.current = setTimeout(() => {
-        const results = searchPhotos(photos, q);
+        const results = searchAllPhotos(q);
         let sorted = results;
         if (sortOrder === "newest") sorted = [...results].sort((a, b) => b.creationTime - a.creationTime);
         else if (sortOrder === "oldest") sorted = [...results].sort((a, b) => a.creationTime - b.creationTime);
@@ -1025,12 +1228,12 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         setIsSearching(false);
       }, 350);
     },
-    [photos, sortOrder]
+    [searchAllPhotos, sortOrder]
   );
 
   useEffect(() => {
     if (searchQuery.trim()) {
-      const results = searchPhotos(photos, searchQuery);
+      const results = searchAllPhotos(searchQuery);
       let sorted = results;
       if (sortOrder === "newest") sorted = [...results].sort((a, b) => b.creationTime - a.creationTime);
       else if (sortOrder === "oldest") sorted = [...results].sort((a, b) => a.creationTime - b.creationTime);
