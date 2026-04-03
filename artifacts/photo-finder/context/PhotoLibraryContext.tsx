@@ -1,8 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as BackgroundFetch from "expo-background-fetch";
 import * as Haptics from "expo-haptics";
 import * as MediaLibrary from "expo-media-library";
-import * as TaskManager from "expo-task-manager";
 import React, {
   createContext,
   useCallback,
@@ -114,45 +112,6 @@ const STORAGE_KEY_SETTINGS = "photo_finder_settings";
 const STORAGE_KEY_AI_TAGS = "photo_finder_ai_tags";
 const STORAGE_KEY_PHOTO_META = "photo_finder_meta_v1";
 const AI_BATCH_SIZE = 3; // concurrent photos to analyze at once
-const BACKGROUND_TASK_NAME = "photo-finder-background-analysis";
-
-// ── Background task (defined at module level — required by expo-task-manager) ─
-// Runs offline-only analysis for a small batch when iOS grants background time.
-// Gemini is skipped here (network use in background can cause issues + rate limits).
-if (!TaskManager.isTaskDefined(BACKGROUND_TASK_NAME)) {
-  TaskManager.defineTask(BACKGROUND_TASK_NAME, async () => {
-    try {
-      const aiTagsRaw = await AsyncStorage.getItem(STORAGE_KEY_AI_TAGS).catch(() => "{}");
-      const existing: Record<string, { tags: string[]; description?: string; ts: number }> = JSON.parse(aiTagsRaw || "{}");
-      const page = await MediaLibrary.getAssetsAsync({
-        mediaType: ["photo", "video"],
-        sortBy: [[MediaLibrary.SortBy.creationTime, false]],
-        first: 60,
-      });
-      const toAnalyze = page.assets.filter((a) => !existing[a.id]);
-      if (toAnalyze.length === 0) return BackgroundFetch.BackgroundFetchResult.NoData;
-      let didWork = false;
-      for (const asset of toAnalyze.slice(0, 20)) {
-        try {
-          const abort = new AbortController();
-          const result = await analyzePhotoOffline(asset, abort.signal);
-          if (result.tags.length > 0) {
-            existing[asset.id] = { tags: result.tags, ts: Date.now() };
-            didWork = true;
-          }
-        } catch {}
-      }
-      if (didWork) {
-        await AsyncStorage.setItem(STORAGE_KEY_AI_TAGS, JSON.stringify(existing)).catch(() => {});
-      }
-      return didWork
-        ? BackgroundFetch.BackgroundFetchResult.NewData
-        : BackgroundFetch.BackgroundFetchResult.NoData;
-    } catch {
-      return BackgroundFetch.BackgroundFetchResult.Failed;
-    }
-  });
-}
 
 // iPhone screen widths (logical points) and physical pixel widths for screenshot detection
 const IOS_SCREEN_WIDTHS = new Set([
@@ -535,21 +494,17 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
     })();
   }, []);
 
-  // Register background fetch so iOS wakes the app to continue analysis
+  // Resume analysis automatically when the user comes back to the foreground.
+  // iOS suspends JS when the app is backgrounded; when the user returns the
+  // running loop picks up where it left off. But if analysis was NOT running
+  // (e.g. it finished, errored, or this is a fresh open after a crash), we
+  // re-trigger it so unanalyzed photos are processed without manual tapping.
   useEffect(() => {
-    BackgroundFetch.registerTaskAsync(BACKGROUND_TASK_NAME, {
-      minimumInterval: 15 * 60, // at most every 15 minutes (iOS decides actual frequency)
-      stopOnTerminate: false,
-      startOnBoot: false,
-    }).catch(() => {}); // fails gracefully in Expo Go / simulator
-
-    // Track app state to resume analysis when returning to foreground
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
       const prev = appStateRef.current;
       appStateRef.current = nextState;
-      // Came back to foreground and analysis was running — resume if needed
       if (prev.match(/inactive|background/) && nextState === "active") {
-        // Came back to foreground — if analysis was paused, auto-resume after a moment
+        // Only restart if not already running
         if (!aiAbortRef.current) {
           setTimeout(() => {
             analyzeAllWithAIRef.current?.();
@@ -557,11 +512,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         }
       }
     });
-
-    return () => {
-      sub.remove();
-      BackgroundFetch.unregisterTaskAsync(BACKGROUND_TASK_NAME).catch(() => {});
-    };
+    return () => sub.remove();
   }, []);
 
   const setCloudEnabled = useCallback(async (v: boolean) => {
