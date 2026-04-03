@@ -113,7 +113,7 @@ const STORAGE_KEY_SETTINGS = "photo_finder_settings";
 const STORAGE_KEY_AI_TAGS = "photo_finder_ai_tags";
 const STORAGE_KEY_PHOTO_META = "photo_finder_meta_v1";
 const OFFLINE_WORKERS = 10;  // concurrent on-device analysis workers
-const GEMINI_WORKERS = 15;   // concurrent Gemini workers (paid tier — no RPM ceiling)
+const GEMINI_WORKERS = 10;   // concurrent Gemini workers — balanced for memory + throughput
 const GEMINI_RPM = 1000;     // effectively unlimited — paid AI Studio account
 
 // ── Sliding-window rate limiter ────────────────────────────────────────────────
@@ -906,7 +906,8 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
           first: 200,
           after,
         });
-        allAssets = [...allAssets, ...page.assets];
+        // Use push() not spread — avoids O(n²) allocation across 150+ pages
+        for (let i = 0; i < page.assets.length; i++) allAssets.push(page.assets[i]);
         after = page.endCursor;
         hasNextPage = page.hasNextPage;
         if (abort.signal.aborted) return;
@@ -1074,6 +1075,9 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       const msg = err instanceof Error ? err.message : "AI analysis failed";
       setAIProgress((prev) => ({ ...prev, isAnalyzing: false, error: msg }));
     } finally {
+      // Always clear the running flag — even if we returned early via abort or
+      // threw without hitting the catch block, so analysis can always restart.
+      setAIProgress((prev) => (prev.isAnalyzing ? { ...prev, isAnalyzing: false } : prev));
       aiAbortRef.current = null;
       deactivateKeepAwake("photo-analysis");
     }
