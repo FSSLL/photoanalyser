@@ -112,9 +112,9 @@ const STORAGE_KEY_SEARCHES = "photo_finder_recent_searches";
 const STORAGE_KEY_SETTINGS = "photo_finder_settings";
 const STORAGE_KEY_AI_TAGS = "photo_finder_ai_tags";
 const STORAGE_KEY_PHOTO_META = "photo_finder_meta_v1";
-const OFFLINE_WORKERS = 10; // concurrent on-device analysis workers
-const GEMINI_WORKERS = 5;   // concurrent Gemini workers
-const GEMINI_RPM = 12;      // max Gemini requests per minute (stay under free-tier 15 RPM)
+const OFFLINE_WORKERS = 10;  // concurrent on-device analysis workers
+const GEMINI_WORKERS = 15;   // concurrent Gemini workers (paid tier — no RPM ceiling)
+const GEMINI_RPM = 1000;     // effectively unlimited — paid AI Studio account
 
 // ── Sliding-window rate limiter ────────────────────────────────────────────────
 // Shared across all Gemini workers so the combined throughput never exceeds GEMINI_RPM.
