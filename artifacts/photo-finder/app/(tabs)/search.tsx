@@ -1,8 +1,9 @@
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useRef } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Platform,
   Pressable,
   ScrollView,
@@ -13,6 +14,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import DeleteConfirmSheet from "@/components/DeleteConfirmSheet";
 import PhotoGrid from "@/components/PhotoGrid";
 import { PhotoAsset, usePhotoLibrary } from "@/context/PhotoLibraryContext";
 import { useColors } from "@/hooks/useColors";
@@ -54,39 +56,123 @@ export default function SearchScreen() {
     setSortOrder,
     permission,
     requestPermission,
+    deleteIds,
+    reviewBeforeDelete,
   } = usePhotoLibrary();
 
-  const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
+  // Local selection state — independent from the library tab's selection
+  const [isSelectMode, setSelectMode] = useState(false);
+  const [localSelected, setLocalSelected] = useState<Set<string>>(new Set());
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
-  // Only update the live query — do NOT save to recents on every keystroke
+  const topPad = insets.top + (Platform.OS === "web" ? 67 : 0);
+  const tabBarHeight =
+    Platform.OS === "web" ? 84 : Platform.OS === "android" ? 56 + insets.bottom : 49 + insets.bottom;
+
   const handleSearch = (q: string) => {
     setSearchQuery(q);
+    // Exit select mode when query changes
+    if (isSelectMode) exitSelectMode();
   };
 
-  // Save to recents only when the user explicitly submits (presses Return/Search)
   const handleSubmit = () => {
-    if (searchQuery.trim()) {
-      addRecentSearch(searchQuery.trim());
-    }
+    if (searchQuery.trim()) addRecentSearch(searchQuery.trim());
   };
 
-  // Tap a suggestion or a recent item → set query AND save to recents
   const handleSuggestionTap = (q: string) => {
     setSearchQuery(q);
     addRecentSearch(q);
   };
 
-  const handlePhotoPress = (photo: PhotoAsset) => {
-    router.push({ pathname: "/photo/[id]", params: { id: photo.id, from: "search" } });
+  const exitSelectMode = useCallback(() => {
+    setSelectMode(false);
+    setLocalSelected(new Set());
+  }, []);
+
+  const toggleItem = useCallback((id: string) => {
+    setLocalSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handlePhotoPress = useCallback(
+    (photo: PhotoAsset) => {
+      if (isSelectMode) {
+        toggleItem(photo.id);
+      } else {
+        router.push({ pathname: "/photo/[id]", params: { id: photo.id, from: "search" } });
+      }
+    },
+    [isSelectMode, toggleItem, router]
+  );
+
+  const handleLongPress = useCallback(
+    (photo: PhotoAsset) => {
+      if (!isSelectMode) {
+        setSelectMode(true);
+        setLocalSelected(new Set([photo.id]));
+      }
+    },
+    [isSelectMode]
+  );
+
+  const selectAll = useCallback(() => {
+    setLocalSelected(new Set(searchResults.map((p) => p.id)));
+  }, [searchResults]);
+
+  const handleDeletePress = () => {
+    if (localSelected.size === 0) return;
+    if (reviewBeforeDelete) {
+      setShowDeleteConfirm(true);
+    } else {
+      confirmDelete();
+    }
   };
 
+  const confirmDelete = async () => {
+    setShowDeleteConfirm(false);
+    setIsDeleting(true);
+    const ids = [...localSelected];
+    const success = await deleteIds(ids);
+    setIsDeleting(false);
+    if (success) exitSelectMode();
+  };
+
+  const selectedPhotos = searchResults.filter((p) => localSelected.has(p.id));
   const hasResults = searchQuery.trim().length > 0;
+  const allSelected = searchResults.length > 0 && localSelected.size === searchResults.length;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Search header */}
       <View style={[styles.header, { paddingTop: topPad, backgroundColor: colors.background }]}>
-        <Text style={[styles.headerTitle, { color: colors.foreground }]}>Search</Text>
+        <View style={styles.headerRow}>
+          <Text style={[styles.headerTitle, { color: colors.foreground }]}>Search</Text>
+
+          {hasResults && (
+            isSelectMode ? (
+              <View style={styles.headerActions}>
+                <Pressable onPress={allSelected ? exitSelectMode : selectAll} style={styles.headerBtn}>
+                  <Text style={[styles.headerBtnText, { color: colors.primary }]}>
+                    {allSelected ? "None" : "All"}
+                  </Text>
+                </Pressable>
+                <Pressable onPress={exitSelectMode} style={styles.headerBtn}>
+                  <Text style={[styles.headerBtnText, { color: colors.primary }]}>Done</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable onPress={() => setSelectMode(true)} style={styles.headerBtn}>
+                <Feather name="check-square" size={22} color={colors.primary} />
+              </Pressable>
+            )
+          )}
+        </View>
+
         <View style={[styles.searchBar, { backgroundColor: colors.muted, borderColor: colors.border }]}>
           <Feather name="search" size={18} color={colors.mutedForeground} style={styles.searchIcon} />
           <TextInput
@@ -115,32 +201,38 @@ export default function SearchScreen() {
           {/* Sort + result count */}
           <View style={styles.resultMeta}>
             <Text style={[styles.resultCount, { color: colors.mutedForeground }]}>
-              {isSearching ? "Searching..." : `${searchResults.length} results`}
+              {isSearching
+                ? "Searching..."
+                : isSelectMode
+                ? `${localSelected.size} selected`
+                : `${searchResults.length} results`}
             </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sortRow}>
-              {SORT_OPTIONS.map((opt) => (
-                <Pressable
-                  key={opt.key}
-                  onPress={() => setSortOrder(opt.key)}
-                  style={[
-                    styles.sortChip,
-                    {
-                      backgroundColor: sortOrder === opt.key ? colors.primary : colors.muted,
-                      borderColor: sortOrder === opt.key ? colors.primary : colors.border,
-                    },
-                  ]}
-                >
-                  <Text
+            {!isSelectMode && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sortRow}>
+                {SORT_OPTIONS.map((opt) => (
+                  <Pressable
+                    key={opt.key}
+                    onPress={() => setSortOrder(opt.key)}
                     style={[
-                      styles.sortChipText,
-                      { color: sortOrder === opt.key ? colors.primaryForeground : colors.mutedForeground },
+                      styles.sortChip,
+                      {
+                        backgroundColor: sortOrder === opt.key ? colors.primary : colors.muted,
+                        borderColor: sortOrder === opt.key ? colors.primary : colors.border,
+                      },
                     ]}
                   >
-                    {opt.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
+                    <Text
+                      style={[
+                        styles.sortChipText,
+                        { color: sortOrder === opt.key ? colors.primaryForeground : colors.mutedForeground },
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
           </View>
 
           {isSearching ? (
@@ -151,8 +243,11 @@ export default function SearchScreen() {
           ) : (
             <PhotoGrid
               photos={searchResults}
-              selectedIds={new Set()}
+              selectedIds={localSelected}
+              isSelectMode={isSelectMode}
               onPress={handlePhotoPress}
+              onLongPress={handleLongPress}
+              extraBottomPad={isSelectMode ? 80 : 0}
               ListEmptyComponent={
                 <View style={styles.emptyState}>
                   <Feather name="search" size={40} color={colors.mutedForeground} />
@@ -163,6 +258,37 @@ export default function SearchScreen() {
                 </View>
               }
             />
+          )}
+
+          {/* Floating delete bar */}
+          {isSelectMode && localSelected.size > 0 && (
+            <View
+              style={[
+                styles.deleteBar,
+                {
+                  backgroundColor: colors.background,
+                  borderTopColor: colors.border,
+                  bottom: tabBarHeight,
+                },
+              ]}
+            >
+              <Pressable
+                onPress={handleDeletePress}
+                disabled={isDeleting}
+                style={[styles.deleteBtn, { backgroundColor: "#EF4444" }]}
+              >
+                {isDeleting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <>
+                    <Feather name="trash-2" size={18} color="#fff" />
+                    <Text style={styles.deleteBtnText}>
+                      Delete {localSelected.size} photo{localSelected.size !== 1 ? "s" : ""}
+                    </Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
           )}
         </>
       ) : (
@@ -216,6 +342,14 @@ export default function SearchScreen() {
           </View>
         </ScrollView>
       )}
+
+      {/* Delete confirmation sheet */}
+      <DeleteConfirmSheet
+        visible={showDeleteConfirm}
+        photos={selectedPhotos}
+        onCancel={() => setShowDeleteConfirm(false)}
+        onConfirm={confirmDelete}
+      />
     </View>
   );
 }
@@ -227,9 +361,26 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 12,
   },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   headerTitle: {
     fontSize: 28,
     fontFamily: "Inter_700Bold",
+  },
+  headerActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  headerBtn: {
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  headerBtnText: {
+    fontSize: 16,
+    fontFamily: "Inter_500Medium",
   },
   searchBar: {
     flexDirection: "row",
@@ -319,4 +470,25 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   phaseText: { fontSize: 12, fontFamily: "Inter_400Regular", flex: 1 },
+  deleteBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  deleteBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderRadius: 14,
+    paddingVertical: 14,
+  },
+  deleteBtnText: {
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    color: "#fff",
+  },
 });
