@@ -57,8 +57,10 @@
   },
   "dependencies": {
     "@react-native-ml-kit/image-labeling": "^2.0.0",
+    "expo-background-fetch": "^55.0.10",
     "expo-build-properties": "^55.0.10",
     "expo-image-manipulator": "^14.0.8",
-    "expo-media-library": "^18.2.1"
+    "expo-media-library": "^18.2.1",
+    "expo-task-manager": "^55.0.10"
   }
 }
