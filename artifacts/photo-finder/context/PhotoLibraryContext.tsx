@@ -820,7 +820,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
       while (hasNextPage) {
         const page = await MediaLibrary.getAssetsAsync({
           mediaType: ["photo", "video"],
-          sortBy: [MediaLibrary.SortBy.creationTime],
+          sortBy: [[MediaLibrary.SortBy.creationTime, false]], // newest first
           first: 200,
           after,
         });
