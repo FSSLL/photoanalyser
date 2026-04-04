@@ -937,7 +937,7 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         photoMetaRef.current.set(asset.id, entry);
         metaToSave[asset.id] = entry;
       }
-      // Persist metadata in background (don't block analysis)
+      // Persist metadata in background then free the object — it's large (~3 MB)
       AsyncStorage.setItem(STORAGE_KEY_PHOTO_META, JSON.stringify(metaToSave)).catch(() => {});
 
       let analyzed = aiTagsRef.current.size;
@@ -949,6 +949,11 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
         if (useGemini && !existingMap[a.id].description) return true;
         return false;
       });
+
+      // Free the full asset list — toAnalyze is the only reference we need now.
+      // allAssets held ~30k MediaLibrary.Asset objects (~6 MB); releasing it
+      // reduces memory pressure during the long analysis run that follows.
+      (allAssets as MediaLibrary.Asset[]).length = 0;
 
       if (toAnalyze.length === 0) {
         setAIProgress({ total, analyzed: total, isAnalyzing: false, lastAnalyzed: Date.now(), error: null });
@@ -987,7 +992,15 @@ export function PhotoLibraryProvider({ children }: { children: React.ReactNode }
           if (abort.signal.aborted) return;
           try {
             // Step 1: On-device analysis (EXIF + filename + ML Kit)
-            const result = await analyzePhotoOffline(asset, abort.signal);
+            // Wrapped in a 20-second race — ML Kit can hang indefinitely on
+            // corrupt / unusual files (large RAWs, malformed JPEGs, etc.).
+            // If it times out the worker catches the error and moves on.
+            const result = await Promise.race([
+              analyzePhotoOffline(asset, abort.signal),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("offline-timeout")), 20_000)
+              ),
+            ]);
             let finalTags = result.tags.map((t) => t.toLowerCase().trim());
             let finalDescription: string | undefined;
 
